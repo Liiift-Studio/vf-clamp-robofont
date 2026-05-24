@@ -88,6 +88,13 @@ def patch_name_table(font, family_name):
 			except Exception:
 				record.string = value.encode('ascii', errors='replace')
 
+	# Ensure Windows (platformID 3) records exist — older fonts may only have Mac records.
+	# Modern renderers (Windows, browsers) depend on platformID 3 entries.
+	for name_id, value in updates.items():
+		has_windows = any(r.nameID == name_id and r.platformID == 3 for r in name_table.names)
+		if not has_windows:
+			name_table.setName(value, name_id, 3, 1, 0x0409)
+
 
 def compact_name(first, last):
 	"""Strip shared word prefix/suffix — 'Inter Light' + 'Inter Bold' → 'Inter Light-Bold'."""
@@ -128,6 +135,18 @@ def produce_restricted_vf(font_path, selected_names, family_name, output_path):
 	hull = compute_hull(font, selected_names)
 	if not hull:
 		raise ValueError('No valid instances selected')
+	# Warn if any axis default falls outside the restricted range — fonttools silently clamps it.
+	fvar = font['fvar']
+	for ax in fvar.axes:
+		constraint = hull.get(ax.axisTag)
+		if isinstance(constraint, tuple):
+			lo, hi = constraint
+			if not (lo <= ax.defaultValue <= hi):
+				clamped = max(lo, min(hi, ax.defaultValue))
+				print(
+					f'Warning: {ax.axisTag} default ({ax.defaultValue}) is outside '
+					f'restricted range [{lo}, {hi}]. Default will be clamped to {clamped}.'
+				)
 	# Ensure the output directory exists before writing.
 	output_dir = os.path.dirname(output_path)
 	if output_dir:
