@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>name</key>
+    <string>vf-clamp</string>
+    <key>version</key>
+    <string>0.1.0</string>
+    <key>developer</key>
+    <string>Liiift Studio</string>
+    <key>developerURL</key>
+    <string>https://vfclamp.com</string>
+    <key>documentationURL</key>
+    <string>https://github.com/Liiift-Studio/vf-clamp-robofont</string>
+    <key>description</key>
+    <string>Generate restricted variable fonts from named instance ranges. Per-purchase micro-VF delivery for type foundries.</string>
+    <key>mainScript</key>
+    <string>vfClamp/__init__.py</string>
+    <key>launchAtStartUp</key>
+    <true/>
+    <key>addToMenu</key>
+    <array>
+        <dict>
+            <key>preferredName</key>
+            <string>Generate Restricted VFs…</string>
+            <key>shortKey</key>
+            <string></string>
+            <key>path</key>
+            <string>vfClamp/__init__.py</string>
+        </dict>
+    </array>
+</dict>
+</plist>

@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>vf-clamp</title>
+	<style>
+		body {
+			font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+			max-width: 600px;
+			margin: 40px auto;
+			padding: 0 20px;
+			color: #222;
+			line-height: 1.6;
+		}
+		h1 { font-size: 1.6em; margin-bottom: 0.25em; }
+		h2 { font-size: 1.1em; margin-top: 2em; }
+		code {
+			background: #f4f4f4;
+			padding: 2px 5px;
+			border-radius: 3px;
+			font-size: 0.9em;
+		}
+		a { color: #0070f3; }
+	</style>
+</head>
+<body>
+	<h1>vf-clamp</h1>
+	<p>Generate restricted variable fonts from named instance ranges.</p>
+
+	<h2>Usage</h2>
+	<ol>
+		<li>Go to <strong>Extensions &gt; Generate Restricted VFs…</strong></li>
+		<li>Click <strong>Select Font…</strong> and choose a variable <code>.ttf</code> or <code>.otf</code> file.</li>
+		<li>Select one or more named instances from the list.</li>
+		<li>Edit the <strong>Output Family Name</strong> if needed (auto-filled from your selection).</li>
+		<li>Choose a <strong>Format</strong> (TTF, OTF, WOFF, WOFF2).</li>
+		<li>Optionally choose a different <strong>Output Folder</strong> (defaults to the font's folder).</li>
+		<li>Click <strong>Generate</strong>.</li>
+	</ol>
+
+	<h2>How It Works</h2>
+	<p>
+		The extension uses <code>fontTools.varLib.instancer</code> to compute the axis hull
+		(min/max per axis) of the selected instances, then restricts the variable font to
+		exactly that range. The name table (family name, PostScript name) is updated to
+		reflect the purchased range so the file self-identifies correctly.
+	</p>
+
+	<h2>Requirements</h2>
+	<ul>
+		<li>RoboFont 4 or later</li>
+		<li>Python 3 (bundled with RoboFont)</li>
+		<li>fontTools (bundled with RoboFont)</li>
+	</ul>
+
+	<h2>Links</h2>
+	<ul>
+		<li><a href="https://vfclamp.com">vfclamp.com</a></li>
+		<li><a href="https://github.com/Liiift-Studio/vf-clamp-robofont">GitHub — vf-clamp-robofont</a></li>
+		<li><a href="https://github.com/Liiift-Studio/vf-clamp">GitHub — vf-clamp (npm package)</a></li>
+	</ul>
+</body>
+</html>
