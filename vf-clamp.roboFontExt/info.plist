@@ -17,7 +17,7 @@
     <key>mainScript</key>
     <string>vfClamp/__init__.py</string>
     <key>launchAtStartUp</key>
-    <true/>
+    <false/>
     <key>addToMenu</key>
     <array>
         <dict>

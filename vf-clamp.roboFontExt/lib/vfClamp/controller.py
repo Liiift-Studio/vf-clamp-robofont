@@ -4,7 +4,18 @@ import os
 import re
 
 import vanilla
-from AppKit import NSOpenPanel, NSFileHandlingPanelOKButton
+
+# NSModalResponseOK (1) is the modern constant; NSFileHandlingPanelOKButton is the
+# legacy alias that may not exist in newer AppKit/macOS SDKs. Import both defensively.
+try:
+	from AppKit import NSOpenPanel, NSModalResponseOK as _OK
+except ImportError:
+	try:
+		from AppKit import NSOpenPanel, NSFileHandlingPanelOKButton as _OK
+	except ImportError:
+		from AppKit import NSOpenPanel
+		_OK = 1  # raw integer fallback
+
 from fontTools.ttLib import TTFont
 from fontTools.varLib import instancer
 
@@ -14,7 +25,12 @@ from fontTools.varLib import instancer
 # ---------------------------------------------------------------------------
 
 def compute_hull(font, selected_names):
-	"""Compute axis hull (min/max per axis) across selected named instances."""
+	"""Compute axis hull (min/max per axis) across selected named instances.
+
+	Returns a dict mapping axis tag → pin value (number) when min == max,
+	or (min, max) tuple when a range is needed. Axes not touched by the
+	selected instances are omitted so instancer leaves them at full range.
+	"""
 	fvar = font['fvar']
 	name_table = font['name']
 	all_insts = {
@@ -31,14 +47,25 @@ def compute_hull(font, selected_names):
 			else:
 				hull[tag][0] = min(hull[tag][0], val)
 				hull[tag][1] = max(hull[tag][1], val)
+
 	result = {}
 	for tag, (lo, hi) in hull.items():
-		result[tag] = lo if lo == hi else instancer.AxisRange(lo, hi)
+		# When min == max, pin the axis to that value (pass a number, not a tuple).
+		# When min != max, restrict to the range using a (lo, hi) tuple.
+		# instancer.AxisRange does NOT exist — the correct API is a plain tuple.
+		result[tag] = lo if lo == hi else (lo, hi)
 	return result
 
 
 def patch_name_table(font, family_name):
-	"""Update name table so restricted VF reflects its instance range."""
+	"""Update name table so restricted VF reflects its instance range.
+
+	Updates nameID 1 (Family), 4 (Full Name), 6 (PostScript Name).
+	nameID 16 (Typographic Family) and 25 (Variations PS Name Prefix) are
+	only updated when already present in the font (older fonts may lack them).
+	PostScript name is kept ASCII-safe as required by the spec.
+	"""
+	# PostScript name: strip everything except A-Za-z0-9 and hyphens.
 	ps_name = re.sub(r'[^A-Za-z0-9-]', '', family_name.replace(' ', '-'))
 	name_table = font['name']
 	existing_ids = {r.nameID for r in name_table.names}
@@ -52,8 +79,10 @@ def patch_name_table(font, family_name):
 			continue
 		value = updates[record.nameID]
 		if record.platformID == 3:
+			# Windows platform: bytes are always UTF-16BE even for ASCII content.
 			record.string = value.encode('utf-16-be')
 		elif record.platformID == 1:
+			# Mac/platform 1: mac_roman; fall back to ASCII with replacement.
 			try:
 				record.string = value.encode('mac_roman')
 			except Exception:
@@ -82,12 +111,27 @@ def compact_name(first, last):
 	return ' '.join(filter(None, [prefix, middle, suffix]))
 
 
+def sanitize_filename(name):
+	"""Replace filesystem-unsafe characters with hyphens and strip leading/trailing hyphens."""
+	safe = re.sub(r'[/\\:*?"<>|]', '-', name)
+	safe = safe.strip('-').strip()
+	return safe or 'output'
+
+
 def produce_restricted_vf(font_path, selected_names, family_name, output_path):
-	"""Produce one restricted VF file from a font path and selected instance names."""
+	"""Produce one restricted VF file from a font path and selected instance names.
+
+	Creates the output directory if it does not exist.
+	Raises ValueError for invalid inputs, or propagates fontTools errors.
+	"""
 	font = TTFont(font_path)
 	hull = compute_hull(font, selected_names)
 	if not hull:
 		raise ValueError('No valid instances selected')
+	# Ensure the output directory exists before writing.
+	output_dir = os.path.dirname(output_path)
+	if output_dir:
+		os.makedirs(output_dir, exist_ok=True)
 	partial = instancer.instantiateVariableFont(font, hull)
 	patch_name_table(partial, family_name)
 	partial.save(output_path)
@@ -104,6 +148,9 @@ FORMAT_EXTENSIONS = {
 	'WOFF': '.woff',
 	'WOFF2': '.woff2',
 }
+
+# Ordered list for indexing into the popup.
+FORMAT_LABELS = list(FORMAT_EXTENSIONS.keys())
 
 
 # ---------------------------------------------------------------------------
@@ -177,7 +224,7 @@ class VFClampController:
 		)
 		self.w.formatPopUp = vanilla.PopUpButton(
 			(16, 288, 100, 22),
-			list(FORMAT_EXTENSIONS.keys()),
+			FORMAT_LABELS,
 		)
 
 		# -- Output folder section ----------------------------------------------
@@ -202,12 +249,25 @@ class VFClampController:
 			'Generate',
 			callback=self._on_generate,
 		)
+		# Disable until a font is loaded and at least one instance is selected.
+		self.w.generateButton.enable(False)
+
 		self.w.statusLabel = vanilla.TextBox(
 			(150, -37, -16, 17),
 			'',
 		)
 
 		self.w.open()
+
+	# -------------------------------------------------------------------------
+	# Internal helpers
+	# -------------------------------------------------------------------------
+
+	def _update_generate_button(self):
+		"""Enable the Generate button only when a font and at least one instance are ready."""
+		indices = self.w.instanceList.getSelection()
+		enabled = bool(self._font_path and indices)
+		self.w.generateButton.enable(enabled)
 
 	# -------------------------------------------------------------------------
 	# Callbacks
@@ -220,10 +280,16 @@ class VFClampController:
 		panel.setCanChooseDirectories_(False)
 		panel.setAllowedFileTypes_(["ttf", "otf"])
 		result = panel.runModal()
-		if result != NSFileHandlingPanelOKButton:
+		# Accept both the legacy constant and the modern integer value (1).
+		if result not in (_OK, 1):
 			return
 
-		path = str(panel.URL().path())
+		url = panel.URL()
+		if url is None:
+			self.w.statusLabel.set('Could not read selected file path.')
+			return
+
+		path = str(url.path())
 		self._font_path = path
 		self.w.fontPathField.set(path)
 
@@ -239,11 +305,13 @@ class VFClampController:
 		self.w.instanceList.set([])
 		self.w.outputNameField.set('')
 		self.w.statusLabel.set('')
+		self.w.generateButton.enable(False)
 
 		try:
 			font = TTFont(path)
 		except Exception as exc:
 			self.w.statusLabel.set(f'Error loading font: {exc}')
+			print(f'vf-clamp: error loading font at {path!r}: {exc}')
 			return
 
 		if 'fvar' not in font:
@@ -267,15 +335,17 @@ class VFClampController:
 			self.w.statusLabel.set('No named instances found in this font.')
 
 	def _on_selection_change(self, sender):
-		"""Update the output name field when the instance selection changes."""
+		"""Update the output name field and Generate button when the selection changes."""
 		indices = self.w.instanceList.getSelection()
 		if not indices:
 			self.w.outputNameField.set('')
+			self._update_generate_button()
 			return
 
 		selected = [self._instance_names[i] for i in indices]
 		name = compact_name(selected[0], selected[-1])
 		self.w.outputNameField.set(name)
+		self._update_generate_button()
 
 	def _on_choose_folder(self, sender):
 		"""Open a folder picker and store the chosen output directory."""
@@ -283,43 +353,52 @@ class VFClampController:
 		panel.setCanChooseFiles_(False)
 		panel.setCanChooseDirectories_(True)
 		result = panel.runModal()
-		if result != NSFileHandlingPanelOKButton:
+		# Accept both the legacy constant and the modern integer value (1).
+		if result not in (_OK, 1):
 			return
 
-		self._output_folder = str(panel.URL().path())
+		url = panel.URL()
+		if url is None:
+			self.w.statusLabel.set('Could not read selected folder path.')
+			return
+
+		self._output_folder = str(url.path())
 		self.w.outputFolderField.set(self._output_folder)
 
 	def _on_generate(self, sender):
 		"""Validate inputs and call produce_restricted_vf to write the output file."""
-		self.w.statusLabel.set('Working…')
+		self.w.statusLabel.set('Processing…')
 
-		# -- Validate ----------------------------------------------------------
-		if not self._font_path:
-			self.w.statusLabel.set('No font selected.')
-			return
-
-		indices = self.w.instanceList.getSelection()
-		if not indices:
-			self.w.statusLabel.set('Select at least one instance.')
-			return
-
-		family_name = self.w.outputNameField.get().strip()
-		if not family_name:
-			self.w.statusLabel.set('Output family name is required.')
-			return
-
-		output_folder = self._output_folder or os.path.dirname(self._font_path)
-
-		format_label = self.w.formatPopUp.getItem()
-		ext = FORMAT_EXTENSIONS.get(format_label, '.ttf')
-
-		safe_name = re.sub(r'[^A-Za-z0-9_\-]', '_', family_name)
-		output_path = os.path.join(output_folder, f'{safe_name}{ext}')
-
-		selected_names = [self._instance_names[i] for i in indices]
-
-		# -- Generate ----------------------------------------------------------
 		try:
+			# -- Validate ----------------------------------------------------------
+			if not self._font_path:
+				self.w.statusLabel.set('No font selected.')
+				return
+
+			indices = self.w.instanceList.getSelection()
+			if not indices:
+				self.w.statusLabel.set('Select at least one instance.')
+				return
+
+			family_name = self.w.outputNameField.get().strip()
+			if not family_name:
+				self.w.statusLabel.set('Output family name is required.')
+				return
+
+			output_folder = self._output_folder or os.path.dirname(self._font_path)
+
+			# Use the selected index to look up the format label, then the extension.
+			format_index = self.w.formatPopUp.get()
+			format_label = FORMAT_LABELS[format_index]
+			ext = FORMAT_EXTENSIONS.get(format_label, '.ttf')
+
+			# Sanitize family name for use as a filename component.
+			safe_name = sanitize_filename(family_name)
+			output_path = os.path.join(output_folder, f'{safe_name}{ext}')
+
+			selected_names = [self._instance_names[i] for i in indices]
+
+			# -- Generate ----------------------------------------------------------
 			produce_restricted_vf(
 				self._font_path,
 				selected_names,
@@ -327,5 +406,14 @@ class VFClampController:
 				output_path,
 			)
 			self.w.statusLabel.set(f'Saved → {os.path.basename(output_path)}')
-		except Exception as exc:
+
+		except (ValueError, AssertionError) as exc:
+			# Validation errors and fontTools assertion failures.
 			self.w.statusLabel.set(f'Error: {exc}')
+			print(f'vf-clamp: generation error: {exc}')
+		except Exception as exc:
+			# Unexpected errors — show clean message, log full detail to console.
+			self.w.statusLabel.set(f'Error: {exc}')
+			import traceback
+			print(f'vf-clamp: unexpected error during generation:')
+			traceback.print_exc()

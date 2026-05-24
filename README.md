@@ -40,9 +40,17 @@ The restricted VF is written to the output folder immediately.
 
 ## How It Works
 
-- **Axis hull computation:** the extension calculates the min/max value per axis across all selected named instances and uses `instancer.AxisRange` to restrict the font to that range.
+- **Axis hull computation:** the extension calculates the min/max value per axis across all selected named instances. When min == max for an axis, that axis is pinned (passed as a scalar to `instancer`). When min != max, the axis is restricted to a `(min, max)` tuple range. Axes not covered by the selection keep their full range.
 - **Name table patching:** nameID 1, 4, 6 (and 16/25 if present) are updated so the output file self-identifies with the correct family name.
 - **Compact naming:** selecting "Inter Light" and "Inter Bold" produces the name "Inter Light-Bold" by stripping shared prefix/suffix words.
+
+> **Note:** select an exported variable font `.ttf` or `.otf` file, not a UFO source. fontTools can also read WOFF/WOFF2 as input.
+
+## Troubleshooting
+
+- **"Not a variable font"** — the selected file has no `fvar` table. Make sure you are pointing at a variable font binary, not a static instance.
+- **fontTools version mismatch** — RoboFont bundles its own fontTools. If `instancer` raises an unexpected error, check RoboFont's Python console for the full traceback and compare against the fontTools changelog.
+- **PostScript name issues** — nameID 6 is restricted to ASCII. The extension strips non-ASCII characters automatically.
 
 ## Links
 
