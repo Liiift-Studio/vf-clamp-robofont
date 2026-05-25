@@ -97,7 +97,11 @@ def patch_name_table(font, family_name):
 
 
 def compact_name(first, last):
-	"""Strip shared word prefix/suffix — 'Inter Light' + 'Inter Bold' → 'Inter Light-Bold'."""
+	"""Strip shared word prefix/suffix — 'Inter Light' + 'Inter Bold' → 'Inter Light-Bold'.
+
+	Canonical TypeScript implementation: @liiift-studio/vf-clamp src/core/utils.ts compactName()
+	Duplicate also exists in vf-clamp-glyphs plugin.py and vf-clamp-vscode panel.ts webview.
+	"""
 	if first == last:
 		return first
 	fw = first.split()
