@@ -5,17 +5,23 @@
     <key>name</key>
     <string>vf-clamp</string>
     <key>version</key>
-    <string>0.1.0</string>
+    <string>2.1.0</string>
+    <key>requiresVersionMajor</key>
+    <integer>4</integer>
+    <key>requiresVersionMinor</key>
+    <integer>0</integer>
     <key>developer</key>
     <string>Liiift Studio</string>
     <key>developerURL</key>
-    <string>https://vfclamp.com</string>
+    <string>https://liiift.studio</string>
     <key>documentationURL</key>
     <string>https://github.com/Liiift-Studio/vf-clamp-robofont</string>
+    <key>html</key>
+    <string>html/index.html</string>
+    <key>license</key>
+    <string>Proprietary — Liiift Studio. All rights reserved.</string>
     <key>description</key>
     <string>Generate restricted variable fonts from named instance ranges. Per-purchase micro-VF delivery for type foundries.</string>
-    <key>mainScript</key>
-    <string>vfClamp/__init__.py</string>
     <key>launchAtStartUp</key>
     <false/>
     <key>addToMenu</key>
@@ -23,8 +29,6 @@
         <dict>
             <key>preferredName</key>
             <string>Generate Restricted VFs…</string>
-            <key>shortKey</key>
-            <string></string>
             <key>path</key>
             <string>vfClamp/__init__.py</string>
         </dict>
