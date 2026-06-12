@@ -3,6 +3,23 @@
 All notable changes to the vf-clamp RoboFont extension are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## 2.1.1 — 2026-06-11
+
+Architectural split following the cross-apply deep-review pass.
+
+### Added
+- `vf-clamp.roboFontExt/lib/vfClamp/formats.py` — central registry of output
+  formats (TTF / OTF / WOFF / WOFF2) mirroring the Glyphs plugin's
+  `formats.py` so dispatch logic lives in one place across the suite.
+- `vf-clamp.roboFontExt/lib/vfClamp/open_font_core.py` — UFO / defcon /
+  fontParts open-font subsystem split out from `controller.py` so the
+  fontTools binary subsystem and the open-source UFO subsystem stay
+  distinct.
+
+### Notes
+- New modules are standalone for this release; `controller.py` will be
+  migrated to consume them in a follow-up.
+
 ## 2.1.0 — 2026-06-01
 
 Major correctness and UX pass following the consolidated panel review.
