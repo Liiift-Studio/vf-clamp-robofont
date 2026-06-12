@@ -3,6 +3,40 @@
 All notable changes to the vf-clamp RoboFont extension are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## 0.1.3 — 2026-06-11
+
+Open-Font source feature wired in, controller refactor lands.
+
+### Added
+- **Open-Font source mode** — generate a restricted VF directly from a UFO that's
+  already open in RoboFont. Detects the sibling `.designspace`, lists named
+  instances from the XML for fast preview (no multi-second compile per click),
+  then compiles via ufo2ft only at generation time. Source RadioGroup added
+  to the UI; popup auto-populates from `AllFonts()`. Frontmost open font
+  preselected.
+
+### Changed
+- `controller.py` now consumes `open_font_core` and `formats` end-to-end.
+  Format dispatch routes through `formats.py` (`extension_for`, `flavor_for`,
+  `inherits_ext`) — no more inline label-string comparisons in the controller.
+- Source-mode is an explicit state machine: `_source_mode` ∈ {`SOURCE_FILE`,
+  `SOURCE_OPEN_FONT`}, mutated only via `_transition_source_mode` which clears
+  stale cross-source state.
+- `_on_generate` split: input collection + validation extracted into
+  `_collect_generate_inputs`; the handler now just dispatches by source mode.
+- defcon/fontParts subsystem isolated in `open_font_core`; controller's
+  fontTools path no longer touches font-source objects directly.
+
+### Closed issues
+- #44 — Hull preview now dispatches by source mode (designspace XML for
+  open-font, compiled TTFont for file mode).
+- #45 — Implicit source-mode state machine replaced with explicit
+  `_source_mode` + `_transition_source_mode`.
+- #46 — `_on_generate` no longer a god-method.
+- #47 — fontTools / defcon subsystems separated via `open_font_core`.
+- #48 — Format registry centralised in `formats.py`.
+- #65 — Open-Font source feature ported.
+
 ## 2.1.1 — 2026-06-11
 
 Architectural split following the cross-apply deep-review pass.
