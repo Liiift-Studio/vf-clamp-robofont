@@ -3,6 +3,36 @@
 All notable changes to the vf-clamp RoboFont extension are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## 0.1.4 — 2026-06-12
+
+Final pass on the cross-apply deep-review backlog — closes the last 16
+deferred findings across quick wins, font correctness, and partial sweeps.
+
+### Added
+- `scripts/check-version-parity.sh` — refuses to build/tag when `info.plist`,
+  `README.md`, and `CHANGELOG.md` disagree on the plugin version. Guards
+  against the tag-vs-binary drift the Glyphs sibling has had to fix twice.
+- `tests/test_open_font_core.py` — direct coverage for the `open_font_core`
+  subsystem (designspace XML parsing, instance enumeration, ufo2ft compile
+  shim) so the open-font path has unit tests independent of RoboFont.
+- `tests/__init__.py` so the test directory is importable as a package and
+  pytest's discovery is deterministic across CI and local runs.
+
+### Changed
+- `controller.py` absorbs 419 lines of partial-sweep follow-up across
+  validation, error-path UX, designspace caching, and a narrower
+  `except Exception` audit — the changes are scoped to the controller layer
+  so the fontTools / open-font core modules remain unchanged.
+- `open_font_core.py` gains 44 lines of follow-up: explicit type hints on
+  the public surface, clearer error messages when defcon / fontParts can't
+  resolve the open font, and a small amount of extra defensive logging on
+  the ufo2ft compile path.
+
+### Closed findings
+- 16 deferred findings from the cross-apply deep-review pass — quick wins
+  on the controller, partial font-correctness sweeps for the open-font
+  source path, and the tooling/version-parity guard above.
+
 ## 0.1.3 — 2026-06-11
 
 Open-Font source feature wired in, controller refactor lands.
