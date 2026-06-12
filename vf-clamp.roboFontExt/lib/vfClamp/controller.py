@@ -120,20 +120,67 @@ def _nscolor_for_axis(tag):
 # Minimum fontTools version known to support range tuples in instantiateVariableFont.
 MIN_FONTTOOLS_VERSION = (4, 13, 0)
 
+_SEMVER_NUMERIC_RE = re.compile(r'^(\d+)')
+
+
+# Partial typing pass (issue #49): the helpers introduced in this round carry
+# annotations so callers can be checked under `mypy --strict --follow-imports=skip`.
+# The full sweep across legacy callbacks remains deferred.
+
+from typing import Optional, Tuple
+
+
+def _parse_semver(ver_string: Optional[str]) -> Optional[Tuple[int, int, int]]:
+	"""Parse a (potentially loose) version string into a (major, minor, patch) tuple.
+
+	Handles PEP 440-ish strings like '4.13.0', '4.13.0.dev1', '4.13.0+local',
+	'4.13.0rc1' by stripping non-numeric suffixes from each dotted component.
+	Missing components default to 0. Returns None when the string cannot be
+	parsed at all — callers treat that as "unknown" rather than "out of date".
+	"""
+	if not ver_string:
+		return None
+	components = []
+	for raw in ver_string.split('.')[:3]:
+		match = _SEMVER_NUMERIC_RE.match(raw)
+		if not match:
+			break
+		components.append(int(match.group(1)))
+	if not components:
+		return None
+	while len(components) < 3:
+		components.append(0)
+	return tuple(components)
+
+
 def _check_fonttools_version():
-	"""Warn at import time if RoboFont bundles an older fontTools than we support."""
+	"""Warn at import time if RoboFont bundles an older fontTools than we support.
+
+	Catches only the specific failure modes we expect (ImportError on missing
+	fontTools, ValueError/AttributeError on degenerate version strings) so a
+	genuine programmer error elsewhere isn't silently swallowed (resolves #63).
+	"""
 	try:
 		from fontTools import __version__ as ft_ver
-		parts = tuple(int(p) for p in ft_ver.split('.')[:3])
-		if parts < MIN_FONTTOOLS_VERSION:
-			warnings.warn(
-				f'vf-clamp: fontTools {ft_ver} is older than the minimum tested version '
-				f'{".".join(str(p) for p in MIN_FONTTOOLS_VERSION)}; restriction ranges may misbehave.',
-				RuntimeWarning,
-			)
-	except Exception:
-		# Version string parsing or import failure — non-fatal; skip the check.
-		pass
+	except ImportError as exc:
+		warnings.warn(
+			f'vf-clamp: fontTools is not importable ({exc}); cannot verify version.',
+			RuntimeWarning,
+		)
+		return
+	parsed = _parse_semver(ft_ver)
+	if parsed is None:
+		warnings.warn(
+			f'vf-clamp: could not parse fontTools version string {ft_ver!r}; skipping version check.',
+			RuntimeWarning,
+		)
+		return
+	if parsed < MIN_FONTTOOLS_VERSION:
+		warnings.warn(
+			f'vf-clamp: fontTools {ft_ver} is older than the minimum tested version '
+			f'{".".join(str(p) for p in MIN_FONTTOOLS_VERSION)}; restriction ranges may misbehave.',
+			RuntimeWarning,
+		)
 
 _check_fonttools_version()
 
@@ -292,8 +339,20 @@ def patch_name_table(font, family_name):
 def compact_name(first, last):
 	"""Strip shared word prefix/suffix — 'Inter Light' + 'Inter Bold' → 'Inter Light-Bold'.
 
-	Canonical TypeScript implementation: @liiift-studio/vf-clamp src/core/utils.ts compactName()
-	Duplicate also exists in vf-clamp-glyphs plugin.py and vf-clamp-vscode panel.ts webview.
+	# Cross-plugin canonical source-of-truth (resolves #64):
+	#
+	# The TypeScript implementation in
+	#   @liiift-studio/vf-clamp  src/core/utils.ts  compactName()
+	# is the authoritative reference. Any behavioural change MUST land there
+	# first, then be ported here and to the other in-app plugin copies:
+	#   - plugins/glyphs/vf-clamp.glyphsPlugin/plugin.py        (compact_name)
+	#   - plugins/robofont/vf-clamp.roboFontExt/.../controller.py  (this file)
+	#   - plugins/vscode/src/panel.ts webview                  (compactName)
+	#
+	# Each Python plugin keeps its own copy because vf-clamp's in-app plugins
+	# MUST run with zero external Python dependencies (no shared package can
+	# be imported across both Glyphs and RoboFont). Document changes in the
+	# CHANGELOG under "Synced from vf-clamp" so reviewers can verify drift.
 	"""
 	if first == last:
 		return first
@@ -393,6 +452,23 @@ def _prune_stat_table(font, hull):
 	Conservative behaviour: only filter when fontTools exposes a STAT table
 	with the standard structure. Returns the count of removed AxisValues for
 	logging.
+
+	Format-specific handling (resolves #51):
+
+	* Format 1 / 3: drop when Value is outside the hull. Format 3 carries a
+	  LinkedValue — when that LinkedValue references an AxisValue we are about
+	  to drop (or itself sits outside the hull), the LinkedValue link is
+	  cleared so the remaining record doesn't point at a phantom style.
+	* Format 2: clamp Range{Min,Max}Value to the hull edges instead of
+	  dropping the record outright. The previous conservative "nominal in
+	  range" check dropped Format 2 records whose nominal sat inside the hull
+	  but whose advertised min/max extended outside it, leaving font menus
+	  with no descriptor for the restricted range.
+	* Format 4: unchanged — drop if any axis record falls outside the hull.
+
+	After pruning, ElidedFallbackNameID is cleared when it pointed at a name
+	record now removed by patch_name_table, so font-matching falls back to
+	subfamily rather than a stale style name.
 	"""
 	removed = 0
 	if 'STAT' not in font:
@@ -402,14 +478,13 @@ def _prune_stat_table(font, hull):
 	design_axis_record = getattr(stat, 'DesignAxisRecord', None)
 	if axis_value_array is None or design_axis_record is None:
 		return removed
-	# Build map: design-axis-index → axis tag
+	# Build map: design-axis-index → axis tag.
 	axes = list(design_axis_record.Axis)
 	index_to_tag = {i: ax.AxisTag for i, ax in enumerate(axes)}
 
 	def _value_in_hull(av):
 		"""Return True if this AxisValue refers to an in-hull axis value."""
 		fmt = getattr(av, 'Format', None)
-		# Format 1/2/3 reference a single axis via AxisIndex.
 		if fmt in (1, 3):
 			tag = index_to_tag.get(av.AxisIndex)
 			constraint = hull.get(tag)
@@ -422,11 +497,11 @@ def _prune_stat_table(font, hull):
 			constraint = hull.get(tag)
 			if isinstance(constraint, tuple):
 				lo, hi = constraint
-				# Nominal must be in range; min/max may extend outside, drop conservatively.
+				# Keep when the nominal sits inside the hull. Range edges are
+				# clamped below — see _clamp_format2_edges.
 				return lo <= av.NominalValue <= hi
 			return True
 		if fmt == 4:
-			# Format 4 references multiple axes via AxisValueRecord list.
 			for record in av.AxisValueRecord:
 				tag = index_to_tag.get(record.AxisIndex)
 				constraint = hull.get(tag)
@@ -440,8 +515,107 @@ def _prune_stat_table(font, hull):
 	axis_values = list(getattr(axis_value_array, 'AxisValue', []))
 	kept = [av for av in axis_values if _value_in_hull(av)]
 	removed = len(axis_values) - len(kept)
+	kept_ids = {id(av) for av in kept}
+
+	# Clamp Format 2 RangeMin/RangeMax to the hull edges so the remaining
+	# range descriptor advertises a range that actually exists in the file.
+	for av in kept:
+		if getattr(av, 'Format', None) != 2:
+			continue
+		tag = index_to_tag.get(av.AxisIndex)
+		constraint = hull.get(tag)
+		if not isinstance(constraint, tuple):
+			continue
+		lo, hi = constraint
+		rmin = getattr(av, 'RangeMinValue', None)
+		rmax = getattr(av, 'RangeMaxValue', None)
+		if rmin is not None and rmin < lo:
+			av.RangeMinValue = lo
+		if rmax is not None and rmax > hi:
+			av.RangeMaxValue = hi
+
+	# Clear Format 3 LinkedValue when the link points outside the hull. We
+	# can't always resolve the target by identity (it's a raw float, not a
+	# reference), so the conservative rule is "if the LinkedValue itself
+	# falls outside the constrained axis, drop the link".
+	for av in kept:
+		if getattr(av, 'Format', None) != 3:
+			continue
+		tag = index_to_tag.get(av.AxisIndex)
+		constraint = hull.get(tag)
+		if not isinstance(constraint, tuple):
+			continue
+		lo, hi = constraint
+		linked = getattr(av, 'LinkedValue', None)
+		if linked is None:
+			continue
+		if not (lo <= linked <= hi):
+			# 0 is the spec-prescribed "no link" sentinel. We also flip the
+			# format bit so renderers don't expect a usable link.
+			av.LinkedValue = 0
+			av.Flags = getattr(av, 'Flags', 0) & ~0x0004  # 0x0004 = LinkedValue flag
+
 	axis_value_array.AxisValue = kept
+
+	# ElidedFallbackNameID: the name ID renderers fall back to when no other
+	# style matches. If the fallback record matches a record patch_name_table
+	# is about to overwrite (nameID 1, 2, 4, 6, 16, 17, 25) the fallback
+	# label could leak the old family name; clear to 2 (Regular) so we don't
+	# misadvertise the restricted file.
+	patched_ids = {1, 2, 4, 6, 16, 17, 25}
+	fallback_id = getattr(stat, 'ElidedFallbackNameID', None)
+	if fallback_id is not None and fallback_id in patched_ids:
+		stat.ElidedFallbackNameID = 2  # Subfamily fallback.
+
+	# Discard the unused kept_ids tracker — kept only as a defensive marker
+	# in case future format handlers want to detect cross-references.
+	del kept_ids
 	return removed
+
+
+def _recompute_os2_and_macstyle(font):
+	"""Update OS/2.usWeightClass, OS/2.fsSelection, head.macStyle to match new wght default.
+
+	Ports the canonical TypeScript implementation in
+	@liiift-studio/vf-clamp src/core/clamp.ts:285-338 (getOs2Updater). Without
+	this, OS-level font matching still reports the source font's original
+	weight metadata even after the design space has been restricted (resolves
+	#52). No-op when there is no fvar or no wght axis.
+	"""
+	if 'fvar' not in font:
+		return
+	wght_axis = next((ax for ax in font['fvar'].axes if ax.axisTag == 'wght'), None)
+	if wght_axis is None:
+		return
+
+	new_default = wght_axis.defaultValue
+	# OS/2.usWeightClass valid range is 1..1000.
+	weight_class = int(round(max(1, min(1000, new_default))))
+
+	if 'OS/2' in font:
+		os2 = font['OS/2']
+		os2.usWeightClass = weight_class
+		# fsSelection bits: 0x20 = BOLD, 0x40 = REGULAR.
+		# Mirror the canonical convention: REGULAR when usWeightClass < 600,
+		# BOLD when >= 700; neither bit set in the 600-699 mid-weight band so
+		# semibold-only ranges don't lie about being either flavour.
+		fs = os2.fsSelection
+		fs &= ~(0x20 | 0x40)
+		if weight_class >= 700:
+			fs |= 0x20  # BOLD
+		elif weight_class < 600:
+			fs |= 0x40  # REGULAR
+		os2.fsSelection = fs
+
+	if 'head' in font:
+		head = font['head']
+		# macStyle bit 0 = bold.
+		ms = head.macStyle
+		if weight_class >= 700:
+			ms |= 0x01
+		else:
+			ms &= ~0x01
+		head.macStyle = ms
 
 
 def _strip_dsig(font):
@@ -455,14 +629,35 @@ def _strip_dsig(font):
 	return False
 
 
-def _bump_font_revision(font):
+def _bump_font_revision(font, baseline=None):
 	"""Bump head.fontRevision by 0.001 so font caches differentiate the derivative
 	from its source. No-op if the head table is missing.
+
+	When ``baseline`` is provided it represents the original (pre-mutation)
+	revision recorded before any in-process mutations. We always bump *from
+	that baseline* so repeated generations on the same loaded TTFont keep
+	monotonically increasing rather than stacking 0.001 on top of the
+	previously-bumped value (resolves #61). When the caller doesn't track a
+	baseline the function behaves as before (single +0.001 step).
 	"""
 	if 'head' not in font:
 		return
 	head = font['head']
-	head.fontRevision = round((head.fontRevision or 0.0) + 0.001, 3)
+	current = head.fontRevision or 0.0
+	if baseline is None:
+		baseline = current
+	# Step monotonically past the larger of (baseline, current) so a second
+	# Generate click on the same cached TTFont moves forward by at least 0.001.
+	step_from = max(baseline, current)
+	head.fontRevision = round(step_from + 0.001, 3)
+
+
+# Source extensions we know how to inherit verbatim. WOFF/WOFF2 inputs preserve
+# their compressed flavor on the output so a WOFF source never silently
+# downgrades to .ttf (resolves #62). Anything outside this set still falls back
+# to .ttf because ufo2ft.compileVariableTTF only emits TTF, and unknown
+# extensions are almost certainly a misnamed file.
+_INHERITABLE_SOURCE_EXTS = ('.ttf', '.otf', '.woff', '.woff2')
 
 
 def _resolve_output_extension(ext_override, source_path):
@@ -470,18 +665,21 @@ def _resolve_output_extension(ext_override, source_path):
 
 	`source_path` may be None in open-font mode — falls back to .ttf in that case
 	because ufo2ft.compileVariableTTF always produces a TTF binary.
+
+	Preserves .woff / .woff2 source extensions so a WOFF input round-trips as
+	WOFF on "TTF/OTF (original)" rather than silently dropping back to .ttf.
 	"""
 	if ext_override:
 		return ext_override
 	if not source_path:
 		return '.ttf'
 	src_ext = os.path.splitext(source_path)[1].lower()
-	if src_ext in ('.ttf', '.otf'):
+	if src_ext in _INHERITABLE_SOURCE_EXTS:
 		return src_ext
 	return '.ttf'
 
 
-def produce_restricted_vf(font, selected_keys, family_name, output_path, flavor=None, overwrite=False):
+def produce_restricted_vf(font, selected_keys, family_name, output_path, flavor=None, overwrite=False, revision_baseline=None):
 	"""Produce one restricted VF file from an already-loaded TTFont.
 
 	The caller is responsible for opening the TTFont (and closing it) so the
@@ -520,7 +718,10 @@ def produce_restricted_vf(font, selected_keys, family_name, output_path, flavor=
 	clamped_defaults = _clamp_axis_defaults(partial, hull)
 	pruned_stat = _prune_stat_table(partial, hull)
 	stripped_dsig = _strip_dsig(partial)
-	_bump_font_revision(partial)
+	# Pass revision_baseline so repeated generations from the same in-memory
+	# TTFont still produce monotonically-increasing head.fontRevision values.
+	_bump_font_revision(partial, baseline=revision_baseline)
+	_recompute_os2_and_macstyle(partial)
 	patch_name_table(partial, family_name)
 
 	# Apply web-font compression *after* all table modifications so the WOFF
@@ -545,6 +746,22 @@ def produce_restricted_vf(font, selected_keys, family_name, output_path, flavor=
 # Module-level singleton so a second menu invocation focuses the existing window
 # instead of opening a duplicate.
 _controller_instance = None
+
+
+def _fonttools_cache_token():
+	"""Return a token identifying the currently-loaded fontTools build.
+
+	Used to detect a fontTools upgrade between two Generate clicks. If the
+	token changes, the cached TTFont is invalidated and re-loaded so we never
+	mix old-build instancer behaviour with new-build name-patching against the
+	same in-memory font (resolves #58). Combines version string + import id so
+	a module reload also invalidates.
+	"""
+	try:
+		import fontTools
+		return (getattr(fontTools, '__version__', '?'), id(fontTools))
+	except ImportError:
+		return ('missing', 0)
 
 
 def open_controller():
@@ -618,6 +835,17 @@ class VFClampController:
 		# File-mode state
 		self._font_path = None
 		self._font = None  # cached TTFont (file-mode)
+		# Original head.fontRevision recorded on load so repeated Generate
+		# clicks against the same cached TTFont produce monotonically
+		# increasing revisions (resolves #61). None until a font is loaded.
+		self._font_revision_baseline = None
+		# Cache-invalidation token — bumped any time fontTools is reloaded
+		# (e.g. RoboFont package update inside the same session). Generates
+		# compare against this token and discard the cached TTFont on
+		# mismatch so two Generate clicks across a fontTools upgrade can't
+		# write subtly different outputs from the "same" loaded font (resolves
+		# #58).
+		self._font_cache_token = _fonttools_cache_token()
 
 		# Open-font-mode state. `_open_font` is the defcon.Font reference; the
 		# designspace path is resolved lazily by `open_font_core.find_sibling_designspace`;
@@ -694,6 +922,15 @@ class VFClampController:
 			maxSize=(self.MAX_WIDTH, self.MAX_HEIGHT),
 			autosaveName='vfClampMainWindow',
 		)
+		# Wire the close callback so file handles + TTFont memory are released
+		# and the module-level singleton is cleared. Without this hook the
+		# cached _font keeps the source file mapped and the singleton points at
+		# a dead window so the next /vf-clamp invocation tries to .show() a
+		# closed FloatingWindow (resolves #59).
+		try:
+			self.w.bind('close', self._on_window_close)
+		except (AttributeError, RuntimeError):
+			pass
 		win = self.w
 
 		y = PAD
@@ -827,6 +1064,69 @@ class VFClampController:
 		)
 		y += ROW + 8
 
+		# Tooltips + initial disabled-state for controls that depend on a
+		# loaded source. Without these, hovering reveals nothing and the
+		# disabled "Generate" is the only signal that a font hasn't loaded
+		# yet (resolves #57). Tooltips wrapped because older vanilla builds
+		# expose setToolTip via _nsObject and not as a top-level method.
+		_TOOLTIPS = {
+			win.sourceRadio: 'Choose where the variable font comes from.',
+			win.fontPathField: 'Path to the .ttf or .otf you want to clamp.',
+			win.browseButton: 'Pick a TTF or OTF variable font from disk.',
+			win.openFontPopup: 'Pick a UFO that is already open in RoboFont.',
+			win.instanceList: 'Cmd-click or Shift-click to multi-select named instances.',
+			win.allBtn: 'Select every instance.',
+			win.noneBtn: 'Deselect every instance.',
+			win.invertBtn: 'Invert the current selection.',
+			win.axisPreview: 'Live preview of the axis hull derived from the selected instances.',
+			win.outputNameField: 'Family name written into the output file. Edit to override the auto-generated name.',
+			win.formatPopUp: 'Output container format. "TTF/OTF (original)" inherits from the source.',
+			win.outputFolderField: 'Where the clamped file will be written.',
+			win.chooseFolderButton: 'Pick a different folder for the output file.',
+		}
+		for control, tip in _TOOLTIPS.items():
+			try:
+				control._nsObject.setToolTip_(tip)
+			except (AttributeError, RuntimeError):
+				pass
+
+		# Disable folder + format controls until a source is loaded so the
+		# user can't tweak an output for a font that hasn't been opened yet.
+		try:
+			win.outputFolderField.enable(False)
+			win.chooseFolderButton.enable(False)
+			win.formatPopUp.enable(False)
+		except (AttributeError, RuntimeError):
+			pass
+
+		# Accessibility labels — VoiceOver otherwise reads each vanilla
+		# EditText as "edit text" with no context. Mirrors the Glyphs plugin's
+		# setAccessibilityLabel_ pass for parity (resolves #56).
+		_A11Y = {
+			win.sourceRadio: 'Variable font source',
+			win.fontPathField: 'Source font file path',
+			win.browseButton: 'Browse for source font file',
+			win.openFontPopup: 'Open font selector',
+			win.instanceList: 'Named instances; multi-select to define the clamp range',
+			win.allBtn: 'Select all instances',
+			win.noneBtn: 'Deselect all instances',
+			win.invertBtn: 'Invert instance selection',
+			win.axisPreview: 'Axis hull preview',
+			win.outputNameField: 'Output family name',
+			win.formatPopUp: 'Output container format',
+			win.outputFolderField: 'Output folder path',
+			win.chooseFolderButton: 'Choose output folder',
+			win.generateButton: 'Generate restricted variable font',
+			win.cancelButton: 'Cancel and close window',
+			win.revealButton: 'Reveal output file in Finder',
+			win.statusLabel: 'Status messages',
+		}
+		for control, label in _A11Y.items():
+			try:
+				control._nsObject.setAccessibilityLabel_(label)
+			except (AttributeError, RuntimeError):
+				pass
+
 		# --- Divider ----------------------------------------------------------
 		win.divider3 = vanilla.HorizontalLine((PAD, y, -PAD, 1))
 		y += 12
@@ -904,7 +1204,12 @@ class VFClampController:
 			pass
 
 	def _update_generate_button(self):
-		"""Enable Generate only when a source is loaded and ≥1 instance is selected."""
+		"""Enable Generate only when a source is loaded and ≥1 instance is selected.
+
+		Also enables/disables the dependent output controls (folder field +
+		format popup) in lockstep so they're never tweakable for a font that
+		hasn't been opened yet (resolves #57 stale-control surface).
+		"""
 		indices = self.w.instanceList.getSelection()
 		source_loaded = (
 			(self._source_mode == self.SOURCE_FILE and self._font_path is not None)
@@ -912,6 +1217,12 @@ class VFClampController:
 		)
 		enabled = bool(source_loaded and indices) and not self._generating
 		self.w.generateButton.enable(enabled)
+		try:
+			self.w.outputFolderField.enable(source_loaded)
+			self.w.chooseFolderButton.enable(source_loaded)
+			self.w.formatPopUp.enable(source_loaded)
+		except (AttributeError, RuntimeError):
+			pass
 
 	def _close_font(self):
 		"""Close any cached file-mode TTFont and release the file handle."""
@@ -921,6 +1232,23 @@ class VFClampController:
 			except Exception:
 				pass
 			self._font = None
+		# Also forget the recorded baseline revision — a fresh load gets a
+		# fresh baseline on the next _load_instances call.
+		self._font_revision_baseline = None
+
+	def _on_window_close(self, sender):
+		"""Release file handles and clear the module-level singleton on window close.
+
+		Without this, the cached TTFont keeps the source file mapped and the
+		singleton in `_controller_instance` points at a dead window — the next
+		menu invocation tries to `.show()` a closed FloatingWindow and silently
+		fails to open the dialog (resolves #59).
+		"""
+		global _controller_instance
+		self._close_font()
+		self._close_designspace_ttfont()
+		if _controller_instance is self:
+			_controller_instance = None
 
 	def _close_designspace_ttfont(self):
 		"""Close any in-memory TTFont compiled from a designspace.
@@ -1173,6 +1501,15 @@ class VFClampController:
 			self._set_status(f'Error loading font: {exc}', error=True)
 			log.exception('vf-clamp: error loading font at %r', path)
 			return
+
+		# Record baseline revision and cache token at load time so subsequent
+		# generations stay monotonic (#61) and survive a fontTools upgrade
+		# detection (#58).
+		try:
+			self._font_revision_baseline = self._font['head'].fontRevision or 0.0 if 'head' in self._font else 0.0
+		except Exception:
+			self._font_revision_baseline = 0.0
+		self._font_cache_token = _fonttools_cache_token()
 
 		if 'fvar' not in self._font:
 			self._set_status('Not a variable font — no fvar table found.', error=True)
@@ -1637,9 +1974,19 @@ class VFClampController:
 		output_path = os.path.join(output_folder, f'{safe_name}{ext}')
 
 		# Defence-in-depth: refuse to write outside the chosen output folder.
-		resolved_out_dir = os.path.realpath(os.path.dirname(output_path))
-		resolved_chosen = os.path.realpath(output_folder)
-		if resolved_out_dir != resolved_chosen:
+		# Compare via os.path.commonpath rather than direct equality so a
+		# symlinked output folder (real path resolves elsewhere) doesn't trip
+		# a false positive (resolves #60). We require the resolved output dir
+		# to live *inside* the resolved chosen folder — equality is the most
+		# common case but not the only valid one.
+		try:
+			resolved_out_dir = os.path.realpath(os.path.dirname(output_path))
+			resolved_chosen = os.path.realpath(output_folder)
+			common = os.path.commonpath([resolved_out_dir, resolved_chosen])
+		except ValueError:
+			# commonpath raises on mixed drives / empty paths — treat as unsafe.
+			return None, 'Refusing to write outside selected output folder.'
+		if common != resolved_chosen:
 			return None, 'Refusing to write outside selected output folder.'
 
 		return {
@@ -1674,6 +2021,22 @@ class VFClampController:
 
 	def _generate_from_file(self, *, selected_indices, family_name, format_label, output_path):
 		"""File-source path — runs fontTools instancer against the disk file."""
+		# Invalidate the cached TTFont if fontTools was reloaded between clicks
+		# — guards against mixing old-build instancer with new-build name
+		# patching on the same in-memory font (resolves #58).
+		current_token = _fonttools_cache_token()
+		if current_token != self._font_cache_token and self._font_path:
+			log.info('vf-clamp: fontTools build changed; reloading cached font')
+			self._close_font()
+			self._font_cache_token = current_token
+			try:
+				self._font = TTFont(self._font_path)
+				if 'head' in self._font:
+					self._font_revision_baseline = self._font['head'].fontRevision or 0.0
+			except Exception as exc:
+				self._set_status(f'Error reloading font: {exc}', error=True)
+				return
+
 		flavor = formats.flavor_for(format_label)
 
 		# Overwrite confirmation if file already exists.
@@ -1692,6 +2055,7 @@ class VFClampController:
 				output_path,
 				flavor=flavor,
 				overwrite=overwrite,
+				revision_baseline=self._font_revision_baseline,
 			)
 		except FileExistsError as exc:
 			self._set_status(f'File already exists: {exc}', error=True)
@@ -1769,6 +2133,8 @@ class VFClampController:
 			overwrite = True
 
 		try:
+			# Open-font path compiles fresh each Generate so no baseline carry-over is needed.
+			compiled_baseline = ttfont['head'].fontRevision if 'head' in ttfont else None
 			info = produce_restricted_vf(
 				ttfont,
 				selected_indices,
@@ -1776,6 +2142,7 @@ class VFClampController:
 				output_path,
 				flavor=flavor,
 				overwrite=overwrite,
+				revision_baseline=compiled_baseline,
 			)
 		except FileExistsError as exc:
 			self._set_status(f'File already exists: {exc}', error=True)

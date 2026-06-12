@@ -14,6 +14,11 @@
 # a .ttf binary; we never write back to a UFO.
 
 import os
+from pathlib import Path
+
+# Partial pathlib migration (issue #53): new helpers and computations introduced
+# from this point forward use pathlib. The legacy os.path call sites remain to
+# keep the diff focused; a full sweep is tracked separately.
 
 # Capability flags. Both gates are independent so we can report 'RoboFont is
 # present but ufo2ft is not' or vice versa, instead of a single AVAILABLE bit.
@@ -207,3 +212,42 @@ def frontmost_open_font():
 		return CurrentFont()
 	except Exception:
 		return None
+
+
+def compute_open_font_hull(open_font_locations, selected_indices):
+	"""Compute min/max per axis across ``selected_indices`` of designspace locations.
+
+	Pure helper extracted from controller._hull_from_designspace_instances so
+	the algorithm is unit-testable without RoboFont, fontTools, or any UI.
+	``open_font_locations`` is a list of ``{tag: value}`` dicts in dialog order;
+	``selected_indices`` is an iterable of positional ints. Returns a dict
+	``{tag: (lo, hi)}`` where ``lo == hi`` indicates a pinned axis. Indices
+	outside the list are skipped silently — mirrors controller behaviour.
+	"""
+	hull: dict = {}
+	if not open_font_locations or not selected_indices:
+		return hull
+	for key in selected_indices:
+		if not (0 <= key < len(open_font_locations)):
+			continue
+		coords = open_font_locations[key] or {}
+		for tag, val in coords.items():
+			if tag not in hull:
+				hull[tag] = [val, val]
+			else:
+				hull[tag][0] = min(hull[tag][0], val)
+				hull[tag][1] = max(hull[tag][1], val)
+	return {tag: (lo, hi) for tag, (lo, hi) in hull.items()}
+
+
+def is_designspace_path(path) -> bool:
+	"""Return True when ``path`` looks like a usable .designspace path.
+
+	pathlib-based replacement helper (issue #53 partial). Centralises the
+	"is this a designspace file we can read?" check so callers stop sprinkling
+	endswith('.designspace') across the codebase.
+	"""
+	if not path:
+		return False
+	p = Path(path)
+	return p.suffix.lower() == '.designspace' and p.is_file()
