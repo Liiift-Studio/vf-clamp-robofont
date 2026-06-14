@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.0 — 2026-06-14
+
+### Added
+- **Preset popup** in the OUTPUT section: save the current instance selection by name, recall it on demand, manage saved entries. Persistence is a single JSON file at `~/.vf-clamp/presets.json`. Presets are name-portable — applying one on a different source picks up any instances whose name matches and reports anything missing in the log.
+- **Three zone headers** — small uppercase `SOURCE`, `DASHBOARD`, `OUTPUT` labels at the top of each section. Lightweight visual cue that the dialog has three distinct sections, matching the Glyphs plugin's three-zone rhythm without the layout-coupling risk of full `vanilla.Box` wrappers.
+
+### Changed
+- Window grew 760 → 834 px to fit the new preset row + zone headers.
+
 ## 1.1.0 — 2026-06-13
 
 Full UI parity pass with `vf-clamp-glyphs` v1.2.17. v1.0.0 brought the design-space chart + animated specimen; v1.1.0 backports the remaining UX features the Glyphs plugin accumulated across v1.2.6 → v1.2.17.

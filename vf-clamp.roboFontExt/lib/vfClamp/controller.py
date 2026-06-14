@@ -908,12 +908,22 @@ class VFClampController:
 	_MORE_SELECT_ITALIC = 'Select All Italic'
 	_MORE_SELECT_ROMAN = 'Select All Roman'
 
-	# Window dimensions — v1.1.0 grew further (640 → 760) to make room for
-	# the LOG pane between the output zone and the action bar. Width also
-	# bumped (560 → 620) so the action bar fits the shortcut chip strip
-	# alongside the right-anchored buttons.
+	# v1.2.0: preset popup sentinels. Must not collide with user preset names.
+	_PRESET_NONE_LABEL = '(no preset)'
+	_PRESET_SAVE_LABEL = '— Save Current… —'
+	_PRESET_MANAGE_LABEL = '— Manage… —'
+
+	# Preset persistence path — JSON keyed by preset name, stored in the
+	# user's home so presets survive across font sources.
+	_PRESET_STORE_PATH = os.path.join(
+		os.path.expanduser('~'), '.vf-clamp', 'presets.json',
+	)
+
+	# Window dimensions — v1.2.0 grew once more (760 → 834) to make room
+	# for the new preset popup row + three uppercase zone headers
+	# (SOURCE / DASHBOARD / OUTPUT) at the top of each section.
 	WINDOW_WIDTH = 620
-	WINDOW_HEIGHT = 760
+	WINDOW_HEIGHT = 834
 	MAX_WIDTH = 1200
 	MAX_HEIGHT = 1200
 
@@ -1053,6 +1063,23 @@ class VFClampController:
 
 		y = PAD
 
+		# --- Zone 1: SOURCE -------------------------------------------------
+		# v1.2.0 zone header — tiny uppercase tracking that visually groups
+		# the rows that follow, mirroring the Glyphs plugin's three-zone
+		# rhythm without the heavier vanilla.Box wrappers (those would
+		# require re-coordinating every row's Y placement).
+		win.zone1Header = vanilla.TextBox(
+			(PAD, y, -PAD, 12), 'SOURCE',
+			sizeStyle='mini', selectable=False,
+		)
+		try:
+			cell = win.zone1Header._nsObject.cell()
+			if NSColor is not None:
+				cell.setTextColor_(NSColor.tertiaryLabelColor())
+		except (AttributeError, RuntimeError):
+			pass
+		y += 14
+
 		# --- Row 1: Source selector (RadioGroup) ------------------------------
 		win.sourceLabel = self._right_label((PAD, y + 4, LABEL_COL_W, LABEL_H), 'Source:')
 		win.sourceRadio = vanilla.RadioGroup(
@@ -1096,6 +1123,19 @@ class VFClampController:
 		# --- Divider ----------------------------------------------------------
 		win.divider1 = vanilla.HorizontalLine((PAD, y, -PAD, 1))
 		y += 12
+
+		# --- Zone 2: DASHBOARD ----------------------------------------------
+		win.zone2Header = vanilla.TextBox(
+			(PAD, y, -PAD, 12), 'DASHBOARD',
+			sizeStyle='mini', selectable=False,
+		)
+		try:
+			cell = win.zone2Header._nsObject.cell()
+			if NSColor is not None:
+				cell.setTextColor_(NSColor.tertiaryLabelColor())
+		except (AttributeError, RuntimeError):
+			pass
+		y += 14
 
 		# --- Row 3: Instances label + filter + bulk-select buttons ----------
 		win.instanceLabel = self._right_label((PAD, y + 2, LABEL_COL_W, LABEL_H), 'Instances:')
@@ -1245,6 +1285,32 @@ class VFClampController:
 		# --- Divider ----------------------------------------------------------
 		win.divider2 = vanilla.HorizontalLine((PAD, y, -PAD, 1))
 		y += 12
+
+		# --- Zone 3: OUTPUT -------------------------------------------------
+		win.zone3Header = vanilla.TextBox(
+			(PAD, y, -PAD, 12), 'OUTPUT',
+			sizeStyle='mini', selectable=False,
+		)
+		try:
+			cell = win.zone3Header._nsObject.cell()
+			if NSColor is not None:
+				cell.setTextColor_(NSColor.tertiaryLabelColor())
+		except (AttributeError, RuntimeError):
+			pass
+		y += 14
+
+		# --- Row 5b: Preset popup (v1.2.0) -----------------------------------
+		# Save/load named selection presets so a user can flip between
+		# common subsets ("body", "display", "italic-only") without
+		# rebuilding the selection by hand each time. Items: "(no preset)"
+		# header, the saved preset names, then the two action sentinels.
+		win.presetLabel = self._right_label((PAD, y + 4, LABEL_COL_W, LABEL_H), 'Preset:')
+		win.presetPopup = vanilla.PopUpButton(
+			(CONTROL_X, y, 240, FIELD_H + 2),
+			self._build_preset_items(),
+			callback=self._on_preset_chosen,
+		)
+		y += ROW + 4
 
 		# --- Row 6: Output Name ----------------------------------------------
 		win.outputNameLabel = self._right_label((PAD, y + 4, LABEL_COL_W, LABEL_H), 'Output Name:')
@@ -1659,6 +1725,197 @@ class VFClampController:
 			widget.set(text)
 		except (AttributeError, RuntimeError):
 			pass
+
+	# -------------------------------------------------------------------------
+	# Presets (v1.2.0) — file-backed named selections
+	# -------------------------------------------------------------------------
+
+	def _load_preset_store(self):
+		"""Read the JSON preset store from disk; return ``{}`` on any failure."""
+		try:
+			import json
+			with open(self._PRESET_STORE_PATH, 'r', encoding='utf-8') as f:
+				data = json.load(f)
+			if isinstance(data, dict):
+				return data
+		except (FileNotFoundError, ValueError, OSError):
+			pass
+		return {}
+
+	def _save_preset_store(self, data):
+		"""Write the JSON preset store to disk, creating parents as needed."""
+		try:
+			import json
+			os.makedirs(os.path.dirname(self._PRESET_STORE_PATH), exist_ok=True)
+			with open(self._PRESET_STORE_PATH, 'w', encoding='utf-8') as f:
+				json.dump(data, f, indent='\t', sort_keys=True)
+			return True
+		except (OSError, ValueError):
+			return False
+
+	def _build_preset_items(self):
+		"""Return the popup's item list — sentinels + saved preset names."""
+		store = self._load_preset_store()
+		items = [self._PRESET_NONE_LABEL]
+		items.extend(sorted(store.keys()))
+		items.append(self._PRESET_SAVE_LABEL)
+		items.append(self._PRESET_MANAGE_LABEL)
+		return items
+
+	def _refresh_preset_popup(self):
+		"""Rebuild the preset popup's items (e.g. after save/delete)."""
+		popup = getattr(self.w, 'presetPopup', None)
+		if popup is None:
+			return
+		try:
+			popup.setItems(self._build_preset_items())
+			popup.set(0)
+		except (AttributeError, RuntimeError):
+			pass
+
+	def _on_preset_chosen(self, sender):
+		"""Preset popup callback — dispatch to save/manage/load by label."""
+		try:
+			idx = sender.get()
+			items = sender.getItems()
+			label = items[idx] if 0 <= idx < len(items) else ''
+		except (AttributeError, RuntimeError):
+			return
+		if label == self._PRESET_NONE_LABEL:
+			return
+		if label == self._PRESET_SAVE_LABEL:
+			self._prompt_save_preset()
+			return
+		if label == self._PRESET_MANAGE_LABEL:
+			self._prompt_manage_presets()
+			return
+		# Otherwise it's the name of a saved preset — apply it.
+		self._apply_preset(label)
+
+	def _prompt_save_preset(self):
+		"""Modal text-input dialog to name the currently-selected instances."""
+		try:
+			from vanilla.dialogs import askString
+		except ImportError:
+			self._set_status(
+				'Preset save unavailable (vanilla.dialogs.askString missing).',
+				error=True,
+			)
+			self._refresh_preset_popup()
+			return
+		try:
+			selected = self.w.instanceList.getSelection() or []
+		except (AttributeError, RuntimeError):
+			selected = []
+		if not selected:
+			self._set_status(
+				'No instances selected — pick instances before saving a preset.',
+				error=True,
+			)
+			self._refresh_preset_popup()
+			return
+		name = askString('Save preset as…', 'untitled', title='vf-clamp')
+		if not name:
+			self._refresh_preset_popup()
+			return
+		# Map filtered indices → full indices → instance names so the saved
+		# preset is portable across filter states and even (loosely) across
+		# fonts with matching instance names.
+		if (
+			self._visible_to_full
+			and len(self._visible_to_full) == len(self._instance_names)
+		):
+			full_indices = [self._visible_to_full[i] for i in selected if 0 <= i < len(self._visible_to_full)]
+		else:
+			full_indices = list(selected)
+		names = [
+			self._instance_names_full[i]
+			for i in full_indices
+			if 0 <= i < len(self._instance_names_full)
+		]
+		store = self._load_preset_store()
+		store[str(name).strip()] = {'instances': names}
+		ok = self._save_preset_store(store)
+		if ok:
+			self._set_status(f'Saved preset "{name}".')
+		else:
+			self._set_status(f'Could not write preset store at {self._PRESET_STORE_PATH}.', error=True)
+		self._refresh_preset_popup()
+
+	def _prompt_manage_presets(self):
+		"""Modal list dialog letting the user delete saved presets."""
+		try:
+			from vanilla.dialogs import getFolder  # noqa: F401  (presence test)
+		except ImportError:
+			pass
+		store = self._load_preset_store()
+		if not store:
+			self._set_status('No saved presets to manage.')
+			self._refresh_preset_popup()
+			return
+		try:
+			from vanilla.dialogs import askString
+			# vanilla doesn't ship a multi-select dialog; we let the user
+			# type one preset name to delete per invocation. Simple and
+			# avoids a custom NSAlert subclass.
+			name = askString(
+				'Delete which preset? (Type the exact name, blank to cancel.)\n\n'
+				+ '\n'.join(sorted(store.keys())),
+				'',
+				title='vf-clamp — Manage Presets',
+			)
+		except ImportError:
+			name = None
+		if name:
+			name = str(name).strip()
+			if name in store:
+				del store[name]
+				if self._save_preset_store(store):
+					self._set_status(f'Deleted preset "{name}".')
+				else:
+					self._set_status('Could not write preset store.', error=True)
+			else:
+				self._set_status(f'No preset named "{name}".', error=True)
+		self._refresh_preset_popup()
+
+	def _apply_preset(self, name):
+		"""Restore a saved preset's instance selection by name-matching."""
+		store = self._load_preset_store()
+		entry = store.get(name)
+		if not isinstance(entry, dict):
+			self._refresh_preset_popup()
+			return
+		want = set(entry.get('instances') or [])
+		if not want:
+			self._refresh_preset_popup()
+			return
+		# Clear any active filter so the matched instances are reachable.
+		try:
+			self.w.filterBox.set('')
+		except (AttributeError, RuntimeError):
+			pass
+		self._instance_filter = ''
+		self._visible_to_full = list(range(len(self._instance_names_full)))
+		self._instance_names = list(self._instance_names_full)
+		try:
+			self.w.instanceList.set(self._instance_names)
+		except (AttributeError, RuntimeError):
+			pass
+		# Map names → visible indices.
+		picked = [i for i, n in enumerate(self._instance_names) if n in want]
+		try:
+			self.w.instanceList.setSelection(picked)
+		except (AttributeError, RuntimeError):
+			pass
+		self._on_selection_change(self.w.instanceList)
+		missing = want - set(self._instance_names)
+		if missing:
+			self._set_status(
+				f'Applied preset "{name}" — {len(missing)} instance(s) not found in this font: '
+				+ ', '.join(sorted(missing)),
+			)
+		else:
+			self._set_status(f'Applied preset "{name}" ({len(picked)} instances).')
 
 	def _install_shortcut_monitor(self):
 		"""Install a local NSEvent monitor for the Cmd-A/D/I bulk-select chord.
