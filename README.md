@@ -2,7 +2,11 @@
 
 **Version:** 1.2.2
 
+![vf-clamp design-space dialog — same UI as the Glyphs plugin, shown here inside Glyphs.app on a real source font](screenshots/dialog.png)
+
 Generate restricted variable fonts from named instance ranges. Per-purchase micro-VF delivery for type foundries.
+
+> The screenshot above is taken inside Glyphs.app — RoboFont renders the same chart and animated specimen because the two custom `NSView` modules ([`hull_plot.py`](vf-clamp.roboFontExt/lib/vfClamp/hull_plot.py) and [`preview_view.py`](vf-clamp.roboFontExt/lib/vfClamp/preview_view.py)) are byte-identical between the two plugins. The surrounding chrome (source picker, instance list, output zone, log pane, action bar) is functionally equivalent in RoboFont, drawn with `vanilla.FloatingWindow` instead of `vanilla.Window`.
 
 ## What It Does
 
