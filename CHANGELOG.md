@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.1 — 2026-06-14
+
+### Changed
+- **Synced hull_plot.py** with the v1.2.18 glyphs fix: corner numeric labels are now OUTSIDE the chart border (top-left, bottom-left, bottom-right) instead of inside. Eliminates the dot overlap users saw on real fonts. Pushed through `npm run sync-plugin-views` from `vfClamp/shared/plugin-views/`.
+
+### Added
+- **`tools/render_dialog.py`** — full-window FloatingWindow mock (chrome + real custom NSViews) at 620 × 920, mirroring v1.2.0 layout. Sibling to the views-only `render_views.py`. Used to render the screenshot for the site cards on vfclamp.com.
+
 ## 1.2.0 — 2026-06-14
 
 ### Added
