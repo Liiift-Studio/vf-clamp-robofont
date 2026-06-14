@@ -1210,6 +1210,12 @@ class VFClampController:
 		win.hullLabel = self._right_label(
 			(PAD, y + 2, LABEL_COL_W, LABEL_H), 'Design space:',
 		)
+		# v1.2.2: push the chart down 14 px so the y_max corner label (drawn
+		# at plot_y_internal − 12 inside the chart's view) has visual
+		# breathing room above the chart border instead of cramping against
+		# the Design space: label above. Same fix as glyphs v1.2.19's
+		# plot_y_box 60 → 76.
+		y += 14
 		PLOT_H = self.PLOT_H
 		SPECIMEN_H = self.SPECIMEN_H
 		col_w = w - CONTROL_X - PAD

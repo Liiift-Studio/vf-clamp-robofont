@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.2 — 2026-06-14
+
+### Changed
+- **Chart pushed down 14 px** so the y_max corner label has breathing room above the chart border instead of cramping the "Design space:" label above it. Same fix as glyphs v1.2.19.
+
 ## 1.2.1 — 2026-06-14
 
 ### Changed
