@@ -788,6 +788,91 @@ def open_controller():
 	return _controller_instance
 
 
+try:
+	import objc as _objc  # type: ignore
+	from AppKit import NSView as _NSView, NSTimer as _NSTimer, NSColor as _NSColor, NSRectFill as _NSRectFill  # type: ignore
+	_LOGSTRIPE_BASE = _NSView
+	_LOGSTRIPE_AVAILABLE = True
+except ImportError:
+	_LOGSTRIPE_BASE = object
+	_LOGSTRIPE_AVAILABLE = False
+
+
+class _LogActivityStripe(_LOGSTRIPE_BASE):
+	"""Thin accent stripe pinned to the LOG pane's left edge.
+
+	Flashes for ~0.8 seconds (NSTimer-driven alpha fade at 30 fps) each
+	time ``flash()`` is called, giving users a peripheral cue that a new
+	log line landed. Mirrors the implementation in the Glyphs plugin's
+	plugin.py. Inherits from object on non-AppKit runtimes so importing
+	the module never raises on CI / Linux.
+	"""
+
+	if _LOGSTRIPE_AVAILABLE:
+
+		def init(self):
+			self = _objc.super(_LogActivityStripe, self).init()
+			if self is None:
+				return None
+			self._alpha = 0.0
+			self._fade_timer = None
+			return self
+
+		def isFlipped(self):
+			return True
+
+		def isOpaque(self):
+			return False
+
+		def acceptsFirstResponder(self):
+			return False
+
+		def flash(self):
+			self._alpha = 1.0
+			t = self._fade_timer
+			if t is not None:
+				try:
+					t.invalidate()
+				except (AttributeError, RuntimeError):
+					pass
+			try:
+				self._fade_timer = (
+					_NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+						1.0 / 30.0, self, 'tickFade:', None, True,
+					)
+				)
+			except (AttributeError, RuntimeError):
+				self._fade_timer = None
+			try:
+				self.setNeedsDisplay_(True)
+			except Exception:
+				pass
+
+		def tickFade_(self, _timer):
+			self._alpha = max(0.0, self._alpha - 1.0 / 24.0)
+			try:
+				self.setNeedsDisplay_(True)
+			except Exception:
+				pass
+			if self._alpha <= 0.0:
+				t = self._fade_timer
+				self._fade_timer = None
+				if t is not None:
+					try:
+						t.invalidate()
+					except (AttributeError, RuntimeError):
+						pass
+
+		def drawRect_(self, _rect):
+			if self._alpha <= 0.0:
+				return
+			try:
+				_NSColor.controlAccentColor().colorWithAlphaComponent_(self._alpha).set()
+				_NSRectFill(self.bounds())
+			except Exception:
+				pass
+
+
 class VFClampController:
 	"""Floating window controller for generating restricted variable fonts.
 
@@ -817,12 +902,18 @@ class VFClampController:
 	# Sentinel item shown when there are zero open fonts in RoboFont.
 	_OPEN_FONT_POPUP_EMPTY = '(no open fonts)'
 
-	# Window dimensions — v1.0.0 grew from 480 to 640 to accommodate the
-	# new design-space chart + animated specimen (replaces the v0.x chips
-	# fallback). 640 is still well below the 720-px lower bound on most
-	# RoboFont users' monitors and keeps the FloatingWindow comfortable.
-	WINDOW_WIDTH = 560
-	WINDOW_HEIGHT = 640
+	# v1.1.0: smart-select popup labels (mirrors the Glyphs plugin's
+	# "More" popup so the two dialogs read identically).
+	_MORE_SELECT_HEADER = '▾ More'
+	_MORE_SELECT_ITALIC = 'Select All Italic'
+	_MORE_SELECT_ROMAN = 'Select All Roman'
+
+	# Window dimensions — v1.1.0 grew further (640 → 760) to make room for
+	# the LOG pane between the output zone and the action bar. Width also
+	# bumped (560 → 620) so the action bar fits the shortcut chip strip
+	# alongside the right-anchored buttons.
+	WINDOW_WIDTH = 620
+	WINDOW_HEIGHT = 760
 	MAX_WIDTH = 1200
 	MAX_HEIGHT = 1200
 
@@ -843,6 +934,9 @@ class VFClampController:
 	# without re-deriving the math on every render pass.
 	PLOT_H = 140
 	SPECIMEN_H = 60
+	# v1.1.0: scrollable LOG pane between the output zone and action bar.
+	# Mirrors the Glyphs plugin's LOG_H = 84.
+	LOG_H = 84
 
 	def __init__(self):
 		"""Initialise the controller window and all UI elements."""
@@ -873,6 +967,16 @@ class VFClampController:
 
 		# Shared state
 		self._instance_names = []
+		# v1.1.0: the *unfiltered* roster, used by _on_filter_changed to
+		# rebuild self._instance_names when the filter string changes.
+		# Kept in sync wherever _instance_names is assigned from a fresh
+		# font load.
+		self._instance_names_full = []
+		self._instance_filter = ''
+		self._visible_to_full = []
+		self._open_after_generating = True
+		self._shortcut_monitor = None
+		self._log_activity_stripe = None
 		self._output_folder = None
 		# Dirty flag: True once the user has typed a custom family name, so
 		# selection changes no longer overwrite it.
@@ -993,21 +1097,38 @@ class VFClampController:
 		win.divider1 = vanilla.HorizontalLine((PAD, y, -PAD, 1))
 		y += 12
 
-		# --- Row 3: Instances label + bulk-select buttons --------------------
+		# --- Row 3: Instances label + filter + bulk-select buttons ----------
 		win.instanceLabel = self._right_label((PAD, y + 2, LABEL_COL_W, LABEL_H), 'Instances:')
+		# v1.1.0: filter field on the left side of the row, bulk-select
+		# buttons (All / None / Invert / More) on the right. Filter narrows
+		# the visible list by case-insensitive substring match on instance
+		# name. "More" popup adds smart selections (Italic / Roman).
+		win.filterBox = vanilla.EditText(
+			(CONTROL_X, y, 160, FIELD_H),
+			placeholder='Filter…',
+			callback=self._on_filter_changed,
+			sizeStyle='small',
+		)
 		# Bulk-selection buttons mirror the Glyphs plugin's All/None/Invert
 		# triad. They sit on the right edge of the row.
 		win.allBtn = vanilla.Button(
-			(-PAD - 180, y, 56, BTN_H), 'All',
+			(-PAD - 246, y, 56, BTN_H), 'All',
 			callback=self._on_select_all, sizeStyle='small',
 		)
 		win.noneBtn = vanilla.Button(
-			(-PAD - 122, y, 56, BTN_H), 'None',
+			(-PAD - 188, y, 56, BTN_H), 'None',
 			callback=self._on_select_none, sizeStyle='small',
 		)
 		win.invertBtn = vanilla.Button(
-			(-PAD - 64, y, 64, BTN_H), 'Invert',
+			(-PAD - 130, y, 64, BTN_H), 'Invert',
 			callback=self._on_select_invert, sizeStyle='small',
+		)
+		# "More" popup — smart selections.
+		win.moreSelectBtn = vanilla.PopUpButton(
+			(-PAD - 64, y, 64, BTN_H),
+			[self._MORE_SELECT_HEADER, self._MORE_SELECT_ITALIC, self._MORE_SELECT_ROMAN],
+			callback=self._on_more_select,
+			sizeStyle='small',
 		)
 		y += LABEL_H + 6
 
@@ -1022,7 +1143,23 @@ class VFClampController:
 			allowsMultipleSelection=True,
 			selectionCallback=self._on_selection_change,
 		)
-		y += 140 + 8
+		y += 140 + 4
+
+		# v1.1.0: selection-count line just below the list so the user
+		# can see "5 of 36 selected" without scanning the list.
+		win.selectionCount = vanilla.TextBox(
+			(CONTROL_X, y, -PAD, 14),
+			'',
+			sizeStyle='small',
+			selectable=False,
+		)
+		try:
+			cell = win.selectionCount._nsObject.cell()
+			if NSColor is not None:
+				cell.setTextColor_(NSColor.tertiaryLabelColor())
+		except (AttributeError, RuntimeError):
+			pass
+		y += 14 + 4
 
 		# --- Row 5: Design space chart + animated specimen (v1.0.0) ---------
 		# Replaces the v0.x single-line axis chips with the same hull plot +
@@ -1138,7 +1275,18 @@ class VFClampController:
 			'Choose…',
 			callback=self._on_choose_folder,
 		)
-		y += ROW + 8
+		y += ROW + 4
+
+		# --- Row 8b: Open after generating checkbox (v1.1.0) ----------------
+		win.openAfterCheckbox = vanilla.CheckBox(
+			(CONTROL_X, y, -PAD, 20),
+			'Open output after generating',
+			callback=self._on_open_after_changed,
+			value=True,
+			sizeStyle='small',
+		)
+		self._open_after_generating = True
+		y += 20 + 8
 
 		# Tooltips + initial disabled-state for controls that depend on a
 		# loaded source. Without these, hovering reveals nothing and the
@@ -1207,8 +1355,74 @@ class VFClampController:
 		win.divider3 = vanilla.HorizontalLine((PAD, y, -PAD, 1))
 		y += 12
 
+		# --- LOG pane (v1.1.0) ----------------------------------------------
+		# Scrollable read-only log pane between the output zone and the
+		# action bar. Replaces the prior tiny statusLabel in the action bar
+		# so error output has room to breathe. Multi-line, selectable,
+		# monospaced — tracebacks stay readable.
+		LOG_H = self.LOG_H
+		win.logHeader = vanilla.TextBox(
+			(PAD + 12, y, 200, 16), 'LOG',
+			sizeStyle='small', selectable=False,
+		)
+		try:
+			cell = win.logHeader._nsObject.cell()
+			if NSColor is not None:
+				cell.setTextColor_(NSColor.tertiaryLabelColor())
+		except (AttributeError, RuntimeError):
+			pass
+		win.logEditor = vanilla.TextEditor(
+			(PAD, y + 18, -PAD, LOG_H - 18),
+			text='',
+			readOnly=True,
+			callback=None,
+		)
+		try:
+			ed = win.logEditor._nsObject  # NSScrollView
+			tv = ed.documentView() if hasattr(ed, 'documentView') else None
+			if tv is not None:
+				if NSFont is not None:
+					tv.setFont_(NSFont.userFixedPitchFontOfSize_(11.0))
+				tv.setEditable_(False)
+				tv.setSelectable_(True)
+				if NSColor is not None:
+					tv.setBackgroundColor_(
+						NSColor.colorWithCalibratedWhite_alpha_(0.0, 0.18),
+					)
+					tv.setTextColor_(NSColor.labelColor())
+		except (AttributeError, RuntimeError):
+			pass
+		try:
+			win.logEditor._nsObject.setAccessibilityLabel_(
+				'Log of recent status messages and errors',
+			)
+		except (AttributeError, RuntimeError):
+			pass
+		# Activity stripe pinned to the LOG pane's left edge — flashes
+		# 0.8s in the accent colour each time _log_append fires. Mounted
+		# on the window content view (raw NSView) with Y-flip math.
+		self._log_activity_stripe = None
+		if _LOGSTRIPE_AVAILABLE:
+			try:
+				stripe_w = 3
+				stripe_y_top = y + 18
+				stripe_h = LOG_H - 18
+				stripe_y_flipped = h - stripe_y_top - stripe_h
+				stripe = _LogActivityStripe.alloc().init()
+				from Foundation import NSMakeRect as _NSMakeRect
+				stripe.setFrame_(_NSMakeRect(
+					PAD, stripe_y_flipped, stripe_w, stripe_h,
+				))
+				win._window.contentView().addSubview_(stripe)
+				self._log_activity_stripe = stripe
+			except (AttributeError, RuntimeError, ImportError):
+				self._log_activity_stripe = None
+		# Hint text on first launch so the empty pane doesn't look broken.
+		self._log_append('Ready. Pick instances and click Generate.')
+		y += LOG_H + 8
+
 		# --- Bottom action bar -----------------------------------------------
-		# Layout: [statusLabel] ... [Reveal] [Cancel] [Generate]
+		# Layout: [⌘A All ⌘D None ⌘I Invert ⇥ Navigate ␣ Toggle ⏎ Generate] ... [Reveal] [Cancel] [Generate]
 		GEN_W = 110
 		CAN_W = 80
 		REV_W = 110
@@ -1256,28 +1470,246 @@ class VFClampController:
 		except Exception:
 			pass
 
-		# Status label runs along the left side of the action bar.
-		status_right_offset = PAD + GEN_W + GAP + CAN_W + GAP + REV_W + GAP
-		win.statusLabel = vanilla.TextBox(
-			(PAD, y + 4, -status_right_offset, LABEL_H),
-			'',
+		# v1.1.0: shortcut chips strip along the left side of the action bar
+		# (replaces the prior single-line statusLabel — status now flows
+		# into the LOG pane above). secondaryLabelColor so it's legible on
+		# dark RoboFont themes; Glyphs plugin uses the same tier.
+		hints_right_offset = PAD + GEN_W + GAP + CAN_W + GAP + REV_W + GAP
+		win.shortcutHints = vanilla.TextBox(
+			(PAD, y + 4, -hints_right_offset, LABEL_H),
+			'⌘A All   ⌘D None   ⌘I Invert   ⇥ Navigate   ␣ Toggle   ⏎ Generate',
 			sizeStyle='small',
-			selectable=True,
+			selectable=False,
 		)
+		try:
+			cell = win.shortcutHints._nsObject.cell()
+			if NSColor is not None:
+				cell.setTextColor_(NSColor.secondaryLabelColor())
+		except Exception:
+			pass
+
+		# A hidden placeholder so any third-party / legacy call to
+		# `self.w.statusLabel.set(...)` (e.g. from RoboFont scripts or
+		# older internal call sites) doesn't crash. v1.1.0 routes status
+		# through _set_status → _log_append; this widget is never visible.
+		win.statusLabel = vanilla.TextBox(
+			(PAD, y + 4, 1, 1), '', sizeStyle='small', selectable=False,
+		)
+		try:
+			win.statusLabel.show(False)
+		except (AttributeError, RuntimeError):
+			pass
 
 		self.w.open()
+		# v1.1.0: install keyboard shortcut monitor for ⌘A/⌘D/⌘I.
+		try:
+			self._install_shortcut_monitor()
+		except (AttributeError, RuntimeError):
+			pass
 
 	# -------------------------------------------------------------------------
 	# Internal helpers
 	# -------------------------------------------------------------------------
 
 	def _set_status(self, message, error=False):
-		"""Set status text. Prefixes 'Error:' when error=True for clarity."""
+		"""Append a status message to the LOG pane.
+
+		v1.1.0 dropped the single-line statusLabel that used to sit on the
+		left side of the action bar. The LOG pane is now the single source
+		of truth for status output; everything (success, failure, hints)
+		flows through here. Mirrors the Glyphs plugin's _set_status.
+		"""
+		if not message:
+			return
 		text = f'Error: {message}' if error else message
+		self._log_append(text)
+
+	def _log_append(self, message):
+		"""Append a line to the scrollable LOG pane and scroll to the bottom.
+
+		Truncates the log when it exceeds ~5 KB so the pane never grows
+		without bound across a long debugging session. Flashes the
+		left-edge activity stripe as a peripheral signal.
+		"""
+		if not message:
+			return
+		editor = getattr(self.w, 'logEditor', None)
+		if editor is None:
+			return
+		stripe = getattr(self, '_log_activity_stripe', None)
+		if stripe is not None:
+			try:
+				stripe.flash()
+			except (AttributeError, RuntimeError):
+				pass
 		try:
-			self.w.statusLabel.set(text)
+			existing = editor.get() or ''
+			if existing and not existing.endswith('\n'):
+				existing += '\n'
+			combined = (existing + str(message)).rstrip() + '\n'
+			if len(combined) > 5120:
+				combined = combined[-5120:]
+				combined = combined[combined.find('\n') + 1:] if '\n' in combined else combined
+			editor.set(combined)
+			# Scroll to the bottom via the underlying NSTextView.
+			try:
+				tv = editor._nsObject.documentView()
+				if tv is not None:
+					length = tv.string().length() if hasattr(tv, 'string') else 0
+					from Foundation import NSMakeRange
+					tv.scrollRangeToVisible_(NSMakeRange(length, 0))
+			except (AttributeError, ImportError, RuntimeError):
+				pass
 		except (AttributeError, RuntimeError):
 			pass
+
+	def _on_filter_changed(self, sender):
+		"""Filter the instance list by case-insensitive substring."""
+		try:
+			needle = (sender.get() or '').strip().lower()
+		except (AttributeError, RuntimeError):
+			needle = ''
+		self._instance_filter = needle
+		# Rebuild the visible list from the filter.
+		visible = []
+		self._visible_to_full = []
+		for full_idx, name in enumerate(self._instance_names_full):
+			if needle and needle not in name.lower():
+				continue
+			visible.append(name)
+			self._visible_to_full.append(full_idx)
+		self._instance_names = visible
+		try:
+			self.w.instanceList.set(visible)
+		except (AttributeError, RuntimeError):
+			pass
+		# Selection cleared on filter change — the visible indices are
+		# now a different set.
+		self._refresh_selection_count()
+		self._on_selection_change(self.w.instanceList)
+
+	def _on_more_select(self, sender):
+		"""'More' popup callback — runs smart-select then resets the popup."""
+		try:
+			idx = sender.get()
+			label = sender.getItems()[idx] if 0 <= idx < len(sender.getItems()) else ''
+		except (AttributeError, RuntimeError):
+			return
+		if label == self._MORE_SELECT_ITALIC:
+			self._select_by_substring('italic')
+		elif label == self._MORE_SELECT_ROMAN:
+			self._select_by_excluding('italic')
+		# Reset to header so re-selecting the same item re-fires.
+		try:
+			sender.set(0)
+		except (AttributeError, RuntimeError):
+			pass
+
+	def _select_by_substring(self, needle):
+		"""Smart-select: pick every visible instance whose name contains needle."""
+		needle = (needle or '').lower()
+		picked = [
+			i for i, name in enumerate(self._instance_names)
+			if needle in name.lower()
+		]
+		try:
+			self.w.instanceList.setSelection(picked)
+		except (AttributeError, RuntimeError):
+			pass
+		self._on_selection_change(self.w.instanceList)
+
+	def _select_by_excluding(self, needle):
+		"""Inverse of _select_by_substring — pick names NOT containing needle."""
+		needle = (needle or '').lower()
+		picked = [
+			i for i, name in enumerate(self._instance_names)
+			if needle not in name.lower()
+		]
+		try:
+			self.w.instanceList.setSelection(picked)
+		except (AttributeError, RuntimeError):
+			pass
+		self._on_selection_change(self.w.instanceList)
+
+	def _on_open_after_changed(self, sender):
+		"""Track the 'Open after generating' checkbox state."""
+		try:
+			self._open_after_generating = bool(sender.get())
+		except (AttributeError, RuntimeError):
+			self._open_after_generating = True
+
+	def _refresh_selection_count(self):
+		"""Update the 'N of M selected' line below the instance list."""
+		widget = getattr(self.w, 'selectionCount', None)
+		if widget is None:
+			return
+		try:
+			selected = self.w.instanceList.getSelection() or []
+		except (AttributeError, RuntimeError):
+			selected = []
+		n = len(selected)
+		total = len(self._instance_names)
+		if total == 0:
+			text = ''
+		elif n == 0:
+			text = f'{total} instance{"s" if total != 1 else ""}'
+		else:
+			text = f'{n} of {total} selected'
+		try:
+			widget.set(text)
+		except (AttributeError, RuntimeError):
+			pass
+
+	def _install_shortcut_monitor(self):
+		"""Install a local NSEvent monitor for the Cmd-A/D/I bulk-select chord.
+
+		Mirrors the Glyphs plugin's shortcut monitor. We deliberately use a
+		LOCAL monitor (only fires when this app is foreground) so the
+		shortcuts don't steal Cmd-A/D/I from other apps. The monitor is
+		torn down on window close (_on_window_close) so a closed dialog
+		doesn't leak a global keyboard hook.
+		"""
+		try:
+			from AppKit import NSEvent as _NSEvent, NSEventMaskKeyDown, NSCommandKeyMask
+		except ImportError:
+			return
+		try:
+			self._shortcut_monitor = (
+				_NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
+					NSEventMaskKeyDown, self._on_local_key_down,
+				)
+			)
+		except (AttributeError, RuntimeError):
+			self._shortcut_monitor = None
+
+	def _on_local_key_down(self, event):
+		"""NSEvent handler — handle ⌘A/⌘D/⌘I when the dialog has focus."""
+		try:
+			from AppKit import NSCommandKeyMask
+			flags = event.modifierFlags() & NSCommandKeyMask
+			if flags == 0:
+				return event
+			chars = (event.charactersIgnoringModifiers() or '').lower()
+			# Don't hijack Cmd-A when a text field is editing.
+			window = event.window()
+			if window is None or window is not getattr(self.w, '_window', None):
+				return event
+			responder = window.firstResponder()
+			from AppKit import NSTextView, NSText
+			if responder is not None and isinstance(responder, (NSTextView, NSText)):
+				return event
+			if chars == 'a':
+				self._on_select_all(None)
+				return None
+			if chars == 'd':
+				self._on_select_none(None)
+				return None
+			if chars == 'i':
+				self._on_select_invert(None)
+				return None
+		except Exception:
+			return event
+		return event
 
 	def _update_generate_button(self):
 		"""Enable Generate only when a source is loaded and ≥1 instance is selected.
@@ -1323,6 +1755,24 @@ class VFClampController:
 		global _controller_instance
 		self._close_font()
 		self._close_designspace_ttfont()
+		# v1.1.0: tear down the keyboard shortcut monitor so a closed
+		# dialog doesn't leak a global Cmd-A/D/I hook.
+		try:
+			from AppKit import NSEvent as _NSEvent
+			mon = self._shortcut_monitor
+			if mon is not None:
+				_NSEvent.removeMonitor_(mon)
+		except (ImportError, AttributeError, RuntimeError):
+			pass
+		self._shortcut_monitor = None
+		# Stop the animated specimen timer too so an orphaned NSTimer
+		# doesn't drive a draw call into a closed view.
+		try:
+			pv = getattr(self, '_preview_view', None)
+			if pv is not None:
+				pv.stopAnimating()
+		except (AttributeError, RuntimeError):
+			pass
 		if _controller_instance is self:
 			_controller_instance = None
 
@@ -1609,6 +2059,13 @@ class VFClampController:
 				display.append(f'{name} ({seen[name]})')
 
 		self._instance_names = display
+		self._instance_names_full = list(display)
+		self._instance_filter = ''
+		self._visible_to_full = list(range(len(display)))
+		try:
+			self.w.filterBox.set('')
+		except (AttributeError, RuntimeError):
+			pass
 		self.w.instanceList.set(display)
 
 		if display:
@@ -1671,6 +2128,13 @@ class VFClampController:
 		self._close_designspace_ttfont()
 
 		self._instance_names = list(names)
+		self._instance_names_full = list(names)
+		self._instance_filter = ''
+		self._visible_to_full = list(range(len(names)))
+		try:
+			self.w.filterBox.set('')
+		except (AttributeError, RuntimeError):
+			pass
 		self.w.instanceList.set(self._instance_names)
 		self.w.outputNameField.set('')
 		self._name_dirty = False
@@ -1736,25 +2200,44 @@ class VFClampController:
 		self._name_dirty = bool(value)
 
 	def _on_selection_change(self, sender):
-		"""Update the output name field, hull preview, and Generate button."""
+		"""Update the output name field, design-space preview, and Generate button."""
 		indices = self.w.instanceList.getSelection()
 		if not indices:
 			if not self._name_dirty:
 				self.w.outputNameField.set('')
 			self._refresh_axis_preview([])
 			self._update_generate_button()
+			self._refresh_selection_count()
 			return
 
-		# Bounds-check indices against current list length.
-		valid = [i for i in indices if 0 <= i < len(self._instance_names)]
-		selected = [self._instance_names[i] for i in valid]
+		# Bounds-check indices against current (possibly filtered) list length.
+		# When a filter is active the List widget's indices point into the
+		# filtered view; translate via _visible_to_full so the hull
+		# computation indexes the full fvar.instances / designspace.instances
+		# roster correctly.
+		filtered_valid = [
+			i for i in indices if 0 <= i < len(self._instance_names)
+		]
+		if (
+			self._visible_to_full
+			and len(self._visible_to_full) == len(self._instance_names)
+		):
+			full_indices = [
+				self._visible_to_full[i] for i in filtered_valid
+			]
+		else:
+			full_indices = filtered_valid
+
+		selected = [self._instance_names[i] for i in filtered_valid]
 		if selected and not self._name_dirty:
 			name = compact_name(selected[0], selected[-1])
 			self.w.outputNameField.set(name)
 
-		# Render the hull preview — colored axis chips when a font is loaded.
-		self._refresh_axis_preview(valid)
+		# Render the design-space preview (colored axis chips / chart) using
+		# *full* indices so compute_hull(font, …) hits the right instances.
+		self._refresh_axis_preview(full_indices)
 		self._update_generate_button()
+		self._refresh_selection_count()
 
 	def _on_choose_folder(self, sender):
 		"""Open a folder picker and store the chosen output directory."""
@@ -2472,6 +2955,16 @@ class VFClampController:
 			self.w.revealButton.show(True)
 		except Exception:
 			pass
+		# v1.1.0: open the produced file in its OS default app when the
+		# "Open after generating" checkbox is set. Defaults to True so
+		# first-time users see the output immediately rather than having to
+		# hunt for Reveal in Finder.
+		if getattr(self, '_open_after_generating', False) and output_path:
+			try:
+				from AppKit import NSWorkspace
+				NSWorkspace.sharedWorkspace().openFile_(output_path)
+			except (ImportError, AttributeError, RuntimeError):
+				pass
 
 
 def _hull_from_designspace_instances(designspace_path, instance_names, valid_indices):

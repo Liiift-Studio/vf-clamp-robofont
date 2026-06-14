@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.1.0 — 2026-06-13
+
+Full UI parity pass with `vf-clamp-glyphs` v1.2.17. v1.0.0 brought the design-space chart + animated specimen; v1.1.0 backports the remaining UX features the Glyphs plugin accumulated across v1.2.6 → v1.2.17.
+
+### Added
+- **Scrollable LOG pane** between the output section and the action bar (84 px tall, monospaced TextEditor). Replaces the prior single-line statusLabel — error tracebacks now have room to breathe and stay readable.
+- **Activity stripe** on the LOG's left edge: a 3-px accent NSView (`_LogActivityStripe`) that flashes at 100% then fades to 0% over 0.8 s every time a new line lands. Peripheral cue so users notice async status without focus-stealing alerts.
+- **Filter field** above the instance list — case-insensitive substring filter. The filter+selection paths now translate filtered indices back to full-list indices before computing hulls, so the algorithm always sees the right instances.
+- **Selection-count line** below the list (`5 of 36 selected`).
+- **More popup** alongside All / None / Invert: smart selects for "Select All Italic" / "Select All Roman" by substring matching on instance names.
+- **Open after generating checkbox** — when checked (default), the produced .ttf/.otf opens in the OS default app via `NSWorkspace.openFile_` immediately after a successful save.
+- **Shortcut chips strip** on the left side of the action bar: `⌘A All   ⌘D None   ⌘I Invert   ⇥ Navigate   ␣ Toggle   ⏎ Generate`. secondaryLabelColor so they read on dark RoboFont panels.
+- **Keyboard shortcut monitor** — local `NSEvent` monitor handles ⌘A / ⌘D / ⌘I when the dialog has focus (and a text field isn't editing). Torn down on window close so a closed dialog doesn't leak a global Cmd-A/D/I hook.
+- **Animated specimen timer cleanup** on window close so an orphaned `NSTimer` doesn't drive draws into a destroyed view.
+
+### Changed
+- **Window grew from 560×640 → 620×760** to accommodate the LOG pane + wider shortcut chip strip.
+- **`statusLabel`** is now a 1×1 hidden placeholder; legacy `self.w.statusLabel.set(...)` calls won't crash but flow through `_set_status → _log_append` instead.
+
 ## 1.0.0 — 2026-06-13
 
 Major version jump signaling feature parity with `vf-clamp-glyphs` v1.2.17. The robofont extension was at v0.1.x with a single-line axis-chips preview; v1.0.0 brings the full interactive design-space chart, animated HOHO Anes specimen, structural counters, accessibility annotations, and shared NSView modules from the Glyphs plugin.
