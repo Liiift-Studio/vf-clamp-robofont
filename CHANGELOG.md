@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.0.0 — 2026-06-13
+
+Major version jump signaling feature parity with `vf-clamp-glyphs` v1.2.17. The robofont extension was at v0.1.x with a single-line axis-chips preview; v1.0.0 brings the full interactive design-space chart, animated HOHO Anes specimen, structural counters, accessibility annotations, and shared NSView modules from the Glyphs plugin.
+
+### Added
+- **Interactive design-space chart** (replaces the old single-line axis chips). Per-instance dots, hull rectangle, axis tick marks + numeric corner labels, live probe ring, keyboard focus ring, per-dot VoiceOver children. Mounted via the framework-agnostic `hull_plot.py` module shared with the Glyphs plugin.
+- **Animated HOHO Anes specimen** at 40 pt — sweeps through the licensed design space at 30 fps, paired with the probe ring above. Caption shows live variation values. From shared `preview_view.py`.
+- **Structural counters** in the new size-estimate strip: `~38 KB  ·  5 instances  ·  5 masters  ·  2 ax  ·  1 pinned`. The masters count comes from walking `designspace.sources` and filtering those whose location falls inside the hull range on every axis.
+- **Per-build snapshot versioning** under `versions/views-v$VERSION.png` — `scripts/build-zip.sh` renders it as the last step. `tools/render_views.py` renders the two custom views standalone (the full FloatingWindow needs RoboFont runtime).
+- **`scripts/build-zip.sh`** — deterministic zip build (mirrors the Glyphs plugin's reproducibility pattern): version-parity check, untracked-file refusal, normalized mtimes, SHA-256 checksum.
+
+### Changed
+- **User-facing terminology**: "hull preview" → "design space" / "design space preview" in label, tooltip, and accessibility strings. Code-internal `hull` / `compute_hull` names retained.
+- **Window grew from 480 → 640 px tall** to accommodate the new chart + specimen. Width unchanged at 560.
+
 All notable changes to the vf-clamp RoboFont extension are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 

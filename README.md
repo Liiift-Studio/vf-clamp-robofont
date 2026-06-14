@@ -1,6 +1,6 @@
 # vf-clamp — RoboFont Extension
 
-**Version:** 0.1.4
+**Version:** 1.0.0
 
 Generate restricted variable fonts from named instance ranges. Per-purchase micro-VF delivery for type foundries.
 

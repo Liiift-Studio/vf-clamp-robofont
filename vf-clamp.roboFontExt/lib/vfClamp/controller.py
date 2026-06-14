@@ -54,6 +54,11 @@ from fontTools.varLib import instancer
 
 from . import formats
 from . import open_font_core
+# v1.0.0: framework-agnostic NSView modules shared with the Glyphs plugin.
+# Both produce raw NSViews mounted via window.contentView().addSubview_;
+# they have no GlyphsApp dependency so they drop straight in here.
+from . import hull_plot as _hull_plot_mod
+from . import preview_view as _preview_view_mod
 
 log = logging.getLogger('vfClamp')
 
@@ -812,9 +817,12 @@ class VFClampController:
 	# Sentinel item shown when there are zero open fonts in RoboFont.
 	_OPEN_FONT_POPUP_EMPTY = '(no open fonts)'
 
-	# Window dimensions
+	# Window dimensions — v1.0.0 grew from 480 to 640 to accommodate the
+	# new design-space chart + animated specimen (replaces the v0.x chips
+	# fallback). 640 is still well below the 720-px lower bound on most
+	# RoboFont users' monitors and keeps the FloatingWindow comfortable.
 	WINDOW_WIDTH = 560
-	WINDOW_HEIGHT = 480
+	WINDOW_HEIGHT = 640
 	MAX_WIDTH = 1200
 	MAX_HEIGHT = 1200
 
@@ -828,7 +836,13 @@ class VFClampController:
 	LABEL_H = 20
 	FIELD_H = 22
 	BTN_H = 24
-	HULL_H = 64
+	# v1.0.0: HULL_H bumped from 64 → 224 to fit the new design-space plot
+	# (140) + size-estimate strip (16) + animated specimen (60) + gaps.
+	HULL_H = 224
+	# Internal split of HULL_H so the build code can place each child
+	# without re-deriving the math on every render pass.
+	PLOT_H = 140
+	SPECIMEN_H = 60
 
 	def __init__(self):
 		"""Initialise the controller window and all UI elements."""
@@ -1010,23 +1024,85 @@ class VFClampController:
 		)
 		y += 140 + 8
 
-		# --- Row 5: Hull preview (colored axis chips) ------------------------
-		win.hullLabel = self._right_label((PAD, y + 2, LABEL_COL_W, LABEL_H), 'Hull:')
+		# --- Row 5: Design space chart + animated specimen (v1.0.0) ---------
+		# Replaces the v0.x single-line axis chips with the same hull plot +
+		# animated HOHO Anes specimen that ships in the Glyphs plugin. The
+		# chips fallback (win.axisPreview) is still constructed below so the
+		# refresh code paths that write text into it during error/empty
+		# states keep working, but it's hidden when the plot is available.
+		win.hullLabel = self._right_label(
+			(PAD, y + 2, LABEL_COL_W, LABEL_H), 'Design space:',
+		)
+		PLOT_H = self.PLOT_H
+		SPECIMEN_H = self.SPECIMEN_H
+		col_w = w - CONTROL_X - PAD
+
+		# Hull plot — raw NSView, top-left origin. addSubview_ on an
+		# unflipped vanilla.FloatingWindow contentView uses bottom-left
+		# coords, so we Y-flip first (same pattern as the Glyphs plugin).
+		self._hull_plot_view = None
+		if _hull_plot_mod.is_available():
+			plot_y_flipped = h - y - PLOT_H
+			plot_view = _hull_plot_mod.make_hull_plot_view(
+				(CONTROL_X, plot_y_flipped, col_w, PLOT_H),
+			)
+			if plot_view is not None:
+				try:
+					win._window.contentView().addSubview_(plot_view)
+					self._hull_plot_view = plot_view
+				except (AttributeError, RuntimeError):
+					self._hull_plot_view = None
+
+		# Chips fallback — same TextBox the prior versions used. Hidden
+		# when the plot mounted successfully; resurfaced if not (e.g. on
+		# a RoboFont build without the AppKit primitives we need).
 		win.axisPreview = vanilla.TextBox(
-			(CONTROL_X, y, -PAD, HULL_H),
+			(CONTROL_X, y, col_w, PLOT_H),
 			'(select instances to preview)',
 			sizeStyle='small',
 			selectable=True,
 		)
-		# vanilla.TextBox wraps NSTextField in single-line mode by default;
-		# the hull preview puts one axis per line so we need wrapping back on
-		# or '\n' chars render as glyph-not-found boxes.
 		try:
 			cell = win.axisPreview._nsObject.cell()
 			cell.setUsesSingleLineMode_(False)
 			cell.setWraps_(True)
 		except (AttributeError, RuntimeError):
 			pass
+		if self._hull_plot_view is not None:
+			try:
+				win.axisPreview.show(False)
+			except (AttributeError, RuntimeError):
+				pass
+
+		# Size estimate + structural counter strip sits between plot and
+		# specimen. _refresh_size_estimate writes "~38 KB · 5 instances ·
+		# 5 masters · 2 ax · 1 pinned" here once a font is loaded.
+		win.sizeEstimate = vanilla.TextBox(
+			(CONTROL_X, y + PLOT_H + 4, col_w, 16),
+			'',
+			sizeStyle='small',
+			selectable=True,
+		)
+
+		# Animated specimen — same NSView the Glyphs plugin uses. Drives
+		# the design-space probe ring inside the plot above each tick.
+		self._preview_view = None
+		if _preview_view_mod.is_available():
+			specimen_top = y + PLOT_H + 22
+			specimen_y_flipped = h - specimen_top - SPECIMEN_H
+			pv = _preview_view_mod.make_preview_view(
+				(CONTROL_X, specimen_y_flipped, col_w, SPECIMEN_H),
+			)
+			if pv is not None:
+				try:
+					win._window.contentView().addSubview_(pv)
+					self._preview_view = pv
+					pv.setFontSize_(40.0)
+					if self._hull_plot_view is not None:
+						pv.setProbeTarget_(self._hull_plot_view)
+				except (AttributeError, RuntimeError):
+					self._preview_view = None
+
 		y += HULL_H + 8
 
 		# --- Divider ----------------------------------------------------------
@@ -1078,7 +1154,7 @@ class VFClampController:
 			win.allBtn: 'Select every instance.',
 			win.noneBtn: 'Deselect every instance.',
 			win.invertBtn: 'Invert the current selection.',
-			win.axisPreview: 'Live preview of the axis hull derived from the selected instances.',
+			win.axisPreview: 'Live preview of the licensed design space derived from the selected instances.',
 			win.outputNameField: 'Family name written into the output file. Edit to override the auto-generated name.',
 			win.formatPopUp: 'Output container format. "TTF/OTF (original)" inherits from the source.',
 			win.outputFolderField: 'Where the clamped file will be written.',
@@ -1111,7 +1187,7 @@ class VFClampController:
 			win.allBtn: 'Select all instances',
 			win.noneBtn: 'Deselect all instances',
 			win.invertBtn: 'Invert instance selection',
-			win.axisPreview: 'Axis hull preview',
+			win.axisPreview: 'Design space preview',
 			win.outputNameField: 'Output family name',
 			win.formatPopUp: 'Output container format',
 			win.outputFolderField: 'Output folder path',
@@ -1796,8 +1872,220 @@ class VFClampController:
 			return {}
 		return {}
 
+	# -------------------------------------------------------------------------
+	# Hull plot + animated specimen (v1.0.0 — shared with Glyphs plugin via
+	# the framework-agnostic hull_plot.py and preview_view.py modules)
+	# -------------------------------------------------------------------------
+
+	def _instance_coords_for_indices(self, valid_indices):
+		"""Return parallel ``(instances, names, axis_ranges)`` for the source.
+
+		Each ``instance`` is a ``{tag: float}`` coord dict — same shape the
+		hull plot expects. ``axis_ranges`` is ``{tag: (min, default, max)}``
+		of the full font. Returns ``([], [], {})`` when no source is loaded.
+
+		valid_indices is unused for return shape (we return the *full*
+		instance list with coords; the hull plot picks the selected ones
+		via setInstances_selectedIndices_onClick_).
+		"""
+		instances = []
+		names = []
+		axis_ranges = {}
+		try:
+			if self._source_mode == self.SOURCE_FILE and self._font is not None:
+				if 'fvar' not in self._font:
+					return ([], [], {})
+				fvar = self._font['fvar']
+				name_table = self._font['name']
+				for ax in fvar.axes:
+					axis_ranges[ax.axisTag] = (
+						float(ax.minValue),
+						float(ax.defaultValue),
+						float(ax.maxValue),
+					)
+				for idx, inst in enumerate(fvar.instances):
+					instances.append({
+						tag: float(val)
+						for tag, val in inst.coordinates.items()
+					})
+					names.append(_get_instance_label(name_table, inst, idx))
+			elif (
+				self._source_mode == self.SOURCE_OPEN_FONT
+				and self._designspace_path
+			):
+				try:
+					from fontTools.designspaceLib import DesignSpaceDocument
+				except ImportError:
+					return ([], [], {})
+				doc = DesignSpaceDocument.fromfile(self._designspace_path)
+				for ax in doc.axes:
+					axis_ranges[ax.tag] = (
+						float(ax.minimum),
+						float(ax.default),
+						float(ax.maximum),
+					)
+				for inst in doc.instances:
+					label = (
+						getattr(inst, 'styleName', '')
+						or getattr(inst, 'name', '')
+						or ''
+					).strip()
+					if not label:
+						continue
+					loc = getattr(inst, 'location', None) or {}
+					instances.append({
+						tag: float(v) for tag, v in loc.items()
+					})
+					names.append(label)
+		except Exception as exc:
+			log.warning('vf-clamp: instance coord build failed: %s', exc)
+			return ([], [], {})
+		return (instances, names, axis_ranges)
+
+	def _axis_color_map(self, axis_tags):
+		"""Return ``{tag: (r, g, b)}`` per-axis colours for the hull plot."""
+		dark = _is_dark_appearance()
+		palette = AXIS_COLORS_DARK if dark else AXIS_COLORS_LIGHT
+		default = DEFAULT_AXIS_COLOR_DARK if dark else DEFAULT_AXIS_COLOR_LIGHT
+		return {tag: palette.get(tag, default) for tag in axis_tags}
+
+	def _refresh_hull_views(self, valid_indices):
+		"""Drive the v1.0.0 design-space plot + animated specimen views.
+
+		Pushes the current hull, axis ranges, instance coordinates, and
+		selection mask into the plot view, then sets the same hull on the
+		animated specimen and starts / stops its animation timer based on
+		whether anything is selected.
+		"""
+		plot = self._hull_plot_view
+		specimen = self._preview_view
+		if plot is None and specimen is None:
+			return
+
+		hull = self._hull_for_preview(valid_indices) if valid_indices else {}
+		instances, _names, axis_ranges = (
+			self._instance_coords_for_indices(valid_indices)
+		)
+		axis_colors = self._axis_color_map(
+			list(axis_ranges.keys()) or list(hull.keys()),
+		)
+
+		if plot is not None:
+			try:
+				plot.setHull_axisRanges_axisColors_(
+					hull, axis_ranges, axis_colors,
+				)
+				plot.setInstances_selectedIndices_onClick_(
+					instances, list(valid_indices or []), None,
+				)
+			except (AttributeError, RuntimeError):
+				pass
+
+		if specimen is not None:
+			try:
+				if hull:
+					specimen.setHull_(hull)
+					specimen.startAnimating()
+				else:
+					specimen.setHull_({})
+					specimen.stopAnimating()
+			except (AttributeError, RuntimeError):
+				pass
+
+	def _refresh_size_estimate(self, valid_indices):
+		"""Update the size-estimate strip beneath the design-space plot."""
+		widget = getattr(self.w, 'sizeEstimate', None)
+		if widget is None:
+			return
+		if not valid_indices:
+			text = ''
+		else:
+			n = len(valid_indices)
+			parts = [f'{n} instance{"s" if n != 1 else ""}']
+			# Quick file-size heuristic (only when we have a source byte count
+			# — File mode keeps one; Open Font compiles on demand).
+			source_bytes = getattr(self, '_source_size_bytes', None)
+			if source_bytes:
+				total = max(1, len(self._instance_names))
+				ratio = max(0.3, min(1.0, n / total))
+				size_kb = int(source_bytes * ratio / 1024)
+				parts.insert(0, f'~{size_kb:,} KB')
+
+			masters, axes, pinned = self._count_structural(valid_indices)
+			if masters is not None:
+				parts.append(
+					f'{masters} master{"s" if masters != 1 else ""}',
+				)
+			if axes is not None and axes > 0:
+				if pinned:
+					parts.append(f'{axes} ax · {pinned} pinned')
+				else:
+					parts.append(f'{axes} ax')
+			text = '  ·  '.join(parts)
+		try:
+			widget.set(text)
+		except (AttributeError, RuntimeError):
+			pass
+
+	def _count_structural(self, valid_indices):
+		"""Return ``(masters, axes, pinned)`` for the current selection."""
+		try:
+			hull = self._hull_for_preview(valid_indices)
+		except Exception:
+			hull = {}
+		if not hull:
+			return (None, None, None)
+		axes = len(hull)
+		pinned = sum(1 for lo, hi in hull.values() if lo == hi)
+		# Master count: only computable for File source (TTFont gvar /
+		# fvar geometry). Open Font is a designspace + UFOs; counting
+		# "masters in hull" would mean parsing the designspace XML and
+		# checking each source location, which is doable but adds latency
+		# on every selection change. Skip for v1.0.0; the axes + pinned
+		# counts are the most informative anyway.
+		masters = None
+		try:
+			if (
+				self._source_mode == self.SOURCE_OPEN_FONT
+				and self._designspace_path
+			):
+				try:
+					from fontTools.designspaceLib import DesignSpaceDocument
+				except ImportError:
+					return (None, axes, pinned)
+				doc = DesignSpaceDocument.fromfile(self._designspace_path)
+				count = 0
+				for src in doc.sources:
+					loc = getattr(src, 'location', None) or {}
+					ok = True
+					for tag, (lo, hi) in hull.items():
+						val = loc.get(tag)
+						if val is None:
+							continue
+						if not (lo <= float(val) <= hi):
+							ok = False
+							break
+					if ok:
+						count += 1
+				masters = count
+		except Exception:
+			masters = None
+		return (masters, axes, pinned)
+
 	def _refresh_axis_preview(self, valid_indices):
-		"""Render the axis hull as colored ■-prefixed chips, one axis per line."""
+		"""Render the axis hull as colored ■-prefixed chips, one axis per line.
+
+		v1.0.0 also drives the new design-space plot and animated specimen
+		when they're mounted. The chips TextBox stays in the call path as
+		a fallback for empty/error states and so the existing layout code
+		doesn't have to change.
+		"""
+		# v1.0.0: drive the design-space plot + animated specimen if they
+		# mounted at build time. _refresh_hull_views handles its own empty
+		# state, so we always call it — even when valid_indices is [].
+		self._refresh_hull_views(valid_indices)
+		self._refresh_size_estimate(valid_indices)
+
 		if not valid_indices:
 			self._set_hull_text('(select instances to preview)')
 			return
