@@ -1,6 +1,6 @@
 # vf-clamp — RoboFont Extension
 
-**Version:** 1.2.2
+**Version:** 1.2.3
 
 ![vf-clamp design-space dialog — same UI as the Glyphs plugin, shown here inside Glyphs.app on a real source font](screenshots/dialog.png)
 
@@ -15,6 +15,10 @@ Select a variable font file, pick one or more named instances, and the extension
 **Example:** a customer who buys "Light" and "Bold" receives a VF spanning `wght 300–700`, named *Typeface Light-Bold*, not the full family.
 
 This is the native RoboFont version of the [`@liiift-studio/vf-clamp`](https://github.com/Liiift-Studio/vf-clamp) npm package. It calls `fontTools.varLib.instancer` directly — no Node.js or npm required.
+
+## Try It Live
+
+Want to see what axis-range restriction does before installing the extension? The interactive demo at **[vfclamp.com](https://vfclamp.com)** lets you upload a variable font, pick named instances, and download the restricted VF straight from the browser — same hull computation and name-table patching this extension performs, no RoboFont required.
 
 ## Requirements
 

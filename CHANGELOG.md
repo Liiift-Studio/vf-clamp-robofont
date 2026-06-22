@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.3 — 2026-06-22
+
+### Fixed
+- **Hull preview now memoized across selection changes (#44).** `_hull_for_preview` recomputed the axis hull from scratch on every selection change — and several times per change, since `_refresh_hull_views`, `_refresh_axis_preview`, and `_count_structural` each call it. In Open Font mode that meant re-parsing the designspace XML (`DesignSpaceDocument.fromfile`) on every selection. The result is now cached, keyed on the active source plus the selected indices, and dropped wholesale whenever the source font/designspace changes so a stale source can never leak a stale hull. Adds `tests/test_hull_cache.py` covering cache hits, source-change invalidation, and parity with a direct compute.
+
+### Added
+- **"Try It Live" section in the README** pointing at the [vfclamp.com](https://vfclamp.com) in-browser demo.
+
 ## 1.2.2 — 2026-06-14
 
 ### Changed

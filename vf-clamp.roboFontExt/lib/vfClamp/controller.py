@@ -975,6 +975,21 @@ class VFClampController:
 		self._designspace_path = None
 		self._cached_ttfont_from_designspace = None
 
+		# Hull preview memoization (resolves #44). The hull preview recomputes
+		# on every selection change — and several times per change, since
+		# _refresh_hull_views, _refresh_axis_preview, and _count_structural each
+		# call _hull_for_preview. Cache results keyed on the selected indices so
+		# revisiting a selection (or the within-change repeat calls) is free.
+		# The cache is scoped to a "source key" identifying the active font /
+		# designspace + roster; whenever that changes the whole cache is dropped
+		# so a stale source can never leak a stale hull (a wrong key would mean
+		# stale results, a correctness bug — see _hull_cache_source_key).
+		self._hull_cache = {}
+		self._hull_cache_source_key = None
+		# Strong ref to the font the cache is keyed against, so id(self._font)
+		# (used in the cache source key) can't be reused by the GC while live.
+		self._hull_cache_source_ref = None
+
 		# Shared state
 		self._instance_names = []
 		# v1.1.0: the *unfiltered* roster, used by _on_filter_changed to
@@ -2587,7 +2602,76 @@ class VFClampController:
 			except Exception:
 				pass
 
+	def _hull_source_key(self):
+		"""Return a token identifying the source the hull is computed from.
+
+		The hull preview's result for a given set of indices depends only on
+		the active source's *content* — the in-memory TTFont (File mode) or the
+		designspace file (Open Font mode). Selection-filter state does not enter
+		here because the indices passed to _hull_for_preview are always full
+		roster positions (see _on_selection_change), so a given index resolves
+		to the same instance regardless of any active filter.
+
+		File mode keys on ``id(self._font)`` — a fresh TTFont is loaded (new id)
+		whenever the source file changes (see _load_font / Generate reload), so
+		the id flips exactly when the content can. We keep the TTFont object
+		alive via the cache's own reference, so Python can't recycle that id
+		onto a different object while a hull keyed on it is still cached.
+
+		Open Font mode keys on the designspace path plus its mtime, so editing
+		and saving the designspace invalidates cached hulls.
+
+		Returns None when no usable source is loaded — callers treat that as
+		"not cacheable" and skip the cache entirely.
+		"""
+		if self._source_mode == self.SOURCE_FILE and self._font is not None:
+			return ('file', id(self._font))
+		if self._source_mode == self.SOURCE_OPEN_FONT and self._designspace_path:
+			try:
+				mtime = os.path.getmtime(self._designspace_path)
+			except OSError:
+				mtime = None
+			return ('open_font', self._designspace_path, mtime)
+		return None
+
 	def _hull_for_preview(self, valid_indices):
+		"""Return the axis hull for the preview, memoized per selection.
+
+		Thin caching wrapper around _compute_hull_for_preview. The cache is
+		keyed on (source_key, sorted selected indices) and dropped wholesale
+		whenever the source changes, so the same selection — including the
+		several repeat calls a single selection change makes across
+		_refresh_hull_views / _refresh_axis_preview / _count_structural — only
+		computes the hull once (resolves #44).
+		"""
+		if not valid_indices:
+			return {}
+
+		source_key = self._hull_source_key()
+		if source_key is None:
+			# No cacheable source; fall back to a direct (uncached) compute.
+			return self._compute_hull_for_preview(valid_indices)
+
+		# Drop the cache when the active source changed underneath us.
+		if source_key != self._hull_cache_source_key:
+			self._hull_cache = {}
+			self._hull_cache_source_key = source_key
+			# Retain a strong reference to the source object so id(self._font)
+			# cannot be reused by the garbage collector while we cache against it.
+			self._hull_cache_source_ref = self._font
+
+		# Hull is order-independent across the selected instances, so sort the
+		# indices to collapse permutations of the same selection onto one entry.
+		index_key = tuple(sorted(valid_indices))
+		cached = self._hull_cache.get(index_key)
+		if cached is not None:
+			return cached
+
+		hull = self._compute_hull_for_preview(valid_indices)
+		self._hull_cache[index_key] = hull
+		return hull
+
+	def _compute_hull_for_preview(self, valid_indices):
 		"""Compute the axis hull for the preview, dispatching by source mode.
 
 		Returns a dict {tag: (lo, hi)} where lo == hi for pinned axes. Returns
