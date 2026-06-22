@@ -74,8 +74,11 @@ The restricted VF is written to the output folder immediately.
 - **DSIG removal:** any digital signature is stripped because instancing invalidates it.
 - **head.fontRevision bump:** the derivative's font revision is incremented by 0.001 so font caches distinguish it from the source.
 - **Compact naming:** selecting "Inter Light" and "Inter Bold" produces the name "Inter Light-Bold" by stripping shared prefix/suffix words.
+- **OS/2 + head sync:** `usWeightClass`, the BOLD/REGULAR bits of `fsSelection`, and `head.macStyle` are recomputed from the restricted font's new wght default so OS weight matching stays correct.
 
 > **Note:** select an exported variable font `.ttf` or `.otf` file, not a UFO source. WOFF/WOFF2 input is not currently supported.
+
+> **Roadmap / known limitation:** the OS/2 sync currently covers weight only. `usWidthClass` (from `wdth`) and the ITALIC bits (from `slnt`/`ital`) are **not yet** recomputed — the Glyphs plugin already sets these, and matching that here is a planned enhancement.
 
 ## Troubleshooting
 
